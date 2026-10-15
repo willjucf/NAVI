@@ -113,7 +113,8 @@ def detect(frame, depth=None):
         cv2.inRange(hsv, cfg.LOWER_RED_2, cfg.UPPER_RED_2)))
 
     green_c, green_area = largest_object(green_mask, min_area)
-    red_c, red_area = largest_object(red_mask, min_area)
+    red_c, red_area = largest_object(
+        red_mask, getattr(cfg, "RED_MIN_AREA_FRAC", cfg.MIN_AREA_FRAC) * (w * h))
 
     depth_blocked = depth is not None and depth.get("path_blocked", False)
 
@@ -247,10 +248,27 @@ class CameraSource:
         self.cap.set(cv2.CAP_PROP_FPS, fps or cfg.CAMERA_FPS)
         # Shallow driver queue. Capture side half of the single frame buffer
         # in report 6.14.
+        #
+        # Two, not one. Measured on the Pi 5: one buffer gives exactly 15 fps
+        # because the driver has nowhere to put the next frame during a read,
+        # so every other frame drops. Two gets full 30 fps for at most one
+        # frame (33 ms) of extra latency.
         try:
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
         except Exception:
             pass
+        # Hold 30 fps in dim light. With dynamic framerate on, auto exposure
+        # stretches frames when it gets dark (a hand near the lens is enough)
+        # and the rate falls to 15 fps. Gain keeps brightness up instead. Best
+        # effort, needs v4l2-ctl and is skipped quietly elsewhere.
+        if os.name != "nt":
+            try:
+                import subprocess
+                subprocess.run(["v4l2-ctl", "-d", "/dev/video%d" % index,
+                                "-c", "exposure_dynamic_framerate=0"],
+                               capture_output=True, timeout=3)
+            except Exception:
+                pass
 
     def read(self):
         ok, frame = self.cap.read()
@@ -393,20 +411,20 @@ class VisionThread(threading.Thread):
         self.results = LatestOnly()
         self.rate = RateCounter()
         self.frame_ms = []
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self.error = None
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self):
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 frame, label = self.source.read()
                 if frame is None:
                     # A dropped frame is fine on a live camera. We never make
                     # up a command to cover the gap.
-                    self._stop.wait(0.005)
+                    self._stop_event.wait(0.005)
                     continue
 
                 t0 = time.perf_counter()
@@ -445,17 +463,17 @@ class UIThread(threading.Thread):
         self.vision = vision
         self.display = LatestOnly()
         self.rate = RateCounter()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._last = None
         self.error = None
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self):
         interval = 1.0 / max(cfg.UI_FPS, 1)
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 started = time.perf_counter()
                 item, _ = self.vision.results.peek()
                 if item is not None:
@@ -471,7 +489,7 @@ class UIThread(threading.Thread):
                 # vision.
                 slack = interval - (time.perf_counter() - started)
                 if slack > 0:
-                    self._stop.wait(slack)
+                    self._stop_event.wait(slack)
         except Exception as exc:
             self.error = exc
             raise

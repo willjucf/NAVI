@@ -2,6 +2,7 @@
 
 #include "navi_logic.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -249,32 +250,140 @@ int32_t echo_us_to_mm(int64_t echo_us) {
     return mm;
 }
 
-// BNO055 decode
+static bool uss_below(int32_t mm, int32_t limit_mm) {
+    return mm != USS_NO_READING && mm < limit_mm;
+}
+
+bool bumper_update(BumperLatch& latch, int32_t left_mm, int32_t right_mm,
+                   int64_t now_us, int32_t stop_mm, int32_t release_mm,
+                   int64_t clear_ms) {
+    // Tripping is never delayed.
+    if (uss_below(left_mm, stop_mm) || uss_below(right_mm, stop_mm)) {
+        latch.tripped = true;
+        latch.clear_since_us = -1;
+        return true;
+    }
+    if (!latch.tripped) {
+        return false;
+    }
+
+    // Inside the band between stop and release keeps it held and restarts
+    // the clear timer.
+    if (uss_below(left_mm, release_mm) || uss_below(right_mm, release_mm)) {
+        latch.clear_since_us = -1;
+        return true;
+    }
+    if (latch.clear_since_us < 0) {
+        latch.clear_since_us = now_us;
+    }
+    if (deadline_expired(now_us, latch.clear_since_us, clear_ms)) {
+        latch.tripped = false;
+        latch.clear_since_us = -1;
+    }
+    return latch.tripped;
+}
+
+// ICM-20948 decode and tilt
 
 namespace {
 
-int16_t le16(const uint8_t* p) {
-    return static_cast<int16_t>(static_cast<uint16_t>(p[0]) |
-                                (static_cast<uint16_t>(p[1]) << 8));
+int16_t be16(const uint8_t* p) {
+    return static_cast<int16_t>((static_cast<uint16_t>(p[0]) << 8) |
+                                static_cast<uint16_t>(p[1]));
+}
+
+constexpr float DEG_TO_RAD = 0.017453292f;
+constexpr float RAD_TO_DEG = 57.29577951f;
+
+float component(const GravityFilter& f, int axis) {
+    const float v[3] = {f.x, f.y, f.z};
+    return axis < 3 ? v[axis] : -v[axis - 3];
 }
 
 }  // namespace
 
-Euler decode_euler(const uint8_t* buf) {
-    Euler e;
-    e.heading = le16(buf + 0) / 16.0f;
-    e.roll = le16(buf + 2) / 16.0f;
-    e.pitch = le16(buf + 4) / 16.0f;
-    return e;
+ImuSample decode_icm_sample(const uint8_t* buf, float accel_lsb_per_g,
+                            float gyro_lsb_per_dps) {
+    ImuSample s;
+    s.ax = be16(buf + 0) / accel_lsb_per_g;
+    s.ay = be16(buf + 2) / accel_lsb_per_g;
+    s.az = be16(buf + 4) / accel_lsb_per_g;
+    s.gx = be16(buf + 6) / gyro_lsb_per_dps;
+    s.gy = be16(buf + 8) / gyro_lsb_per_dps;
+    s.gz = be16(buf + 10) / gyro_lsb_per_dps;
+    return s;
 }
 
-CalibStatus decode_calib(uint8_t reg) {
-    CalibStatus c;
-    c.system = (reg >> 6) & 0x03;
-    c.gyro = (reg >> 4) & 0x03;
-    c.accel = (reg >> 2) & 0x03;
-    c.mag = reg & 0x03;
-    return c;
+void gravity_filter_update(GravityFilter& f, const ImuSample& s, float dt_s,
+                           float accel_weight, float accel_reject_g) {
+    const float mag = std::sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az);
+
+    // Seed from the first sane accelerometer reading.
+    if (!f.ready) {
+        if (mag > 0.5f) {
+            f.x = s.ax / mag;
+            f.y = s.ay / mag;
+            f.z = s.az / mag;
+            f.ready = true;
+        }
+        return;
+    }
+
+    // Gyro step. A vector fixed in the world moves the opposite way to the
+    // sensor's rotation, so v' = v - (w x v) dt, which is v + (v x w) dt.
+    const float wx = s.gx * DEG_TO_RAD * dt_s;
+    const float wy = s.gy * DEG_TO_RAD * dt_s;
+    const float wz = s.gz * DEG_TO_RAD * dt_s;
+    float x = f.x + (f.y * wz - f.z * wy);
+    float y = f.y + (f.z * wx - f.x * wz);
+    float z = f.z + (f.x * wy - f.y * wx);
+
+    // Accelerometer correction, only when it is reading gravity alone.
+    const float off = mag > 1.0f ? mag - 1.0f : 1.0f - mag;
+    if (mag > 0.0f && off <= accel_reject_g) {
+        x = (1.0f - accel_weight) * x + accel_weight * (s.ax / mag);
+        y = (1.0f - accel_weight) * y + accel_weight * (s.ay / mag);
+        z = (1.0f - accel_weight) * z + accel_weight * (s.az / mag);
+    }
+
+    const float n = std::sqrt(x * x + y * y + z * z);
+    if (n > 0.0f) {
+        f.x = x / n;
+        f.y = y / n;
+        f.z = z / n;
+    }
+}
+
+int up_axis(const GravityFilter& f) {
+    int best = 0;
+    float best_val = -2.0f;
+    for (int axis = 0; axis < 6; ++axis) {
+        const float c = component(f, axis);
+        if (c > best_val) {
+            best_val = c;
+            best = axis;
+        }
+    }
+    return best;
+}
+
+float angle_from_axis(const GravityFilter& f, int axis) {
+    float c = component(f, axis);
+    if (c > 1.0f) c = 1.0f;
+    if (c < -1.0f) c = -1.0f;
+    return std::acos(c) * RAD_TO_DEG;
+}
+
+Euler tilt_angles(const GravityFilter& f, int axis) {
+    const float v[3] = {f.x, f.y, f.z};
+    const int i = axis % 3;
+    const float u = component(f, axis);
+    const float a = v[(i + 1) % 3];
+    const float b = v[(i + 2) % 3];
+    Euler e;
+    e.roll = std::atan2(b, u) * RAD_TO_DEG;
+    e.pitch = std::atan2(-a, std::sqrt(b * b + u * u)) * RAD_TO_DEG;
+    return e;
 }
 
 bool tilt_exceeds(const Euler& e, float limit_deg) {

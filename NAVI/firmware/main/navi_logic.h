@@ -139,34 +139,80 @@ int ramp_toward(int current, int target, int max_step);
 // touching the sensor.
 constexpr int32_t USS_NO_READING = -1;
 
-// HC SR04 echo width to mm. Sound is about 343 m/s and the pulse is a round
+// Echo width to mm (HC-SR04 and RCWL-1655 use the same pulse). Sound is about 343 m/s and the pulse is a round
 // trip, so mm = echo_us * 0.343 / 2. Out of range readings return no reading
 // because the HC SR04 does not fail cleanly out there.
 constexpr int32_t USS_MIN_MM = 20;
 constexpr int32_t USS_MAX_MM = 4000;
 int32_t echo_us_to_mm(int64_t echo_us);
 
-// BNO055 decode (report 3.6)
+// Bumper with hysteresis. Trips at once on any reading under stop_mm, but only
+// releases after every reading has been at or past release_mm (or no reading)
+// for clear_ms straight. Without this a hand near the limit, a dropped echo or
+// a ghost reading toggles the motors several times a second.
+//
+// No reading counts as clear, because open space reads that way. The hold
+// time is what stops a single dropout from releasing it.
+struct BumperLatch {
+    bool tripped = false;
+    int64_t clear_since_us = -1;     // -1 while not clear
+};
+
+bool bumper_update(BumperLatch& latch, int32_t left_mm, int32_t right_mm,
+                   int64_t now_us, int32_t stop_mm, int32_t release_mm,
+                   int64_t clear_ms);
+
+// ICM-20948 decode and tilt (report 3.6)
+//
+// The ICM has no onboard fusion like the BNO055 did, so tilt is worked out
+// here from the raw accelerometer and gyro.
+
+struct ImuSample {
+    float ax = 0.0f, ay = 0.0f, az = 0.0f;   // g
+    float gx = 0.0f, gy = 0.0f, gz = 0.0f;   // degrees per second
+};
+
+// buf is 12 bytes from ACCEL_XOUT_H (0x2D, bank 0): accel XYZ then gyro XYZ,
+// each a signed 16 bit big endian value. The scales depend on the full scale
+// range set at init.
+ImuSample decode_icm_sample(const uint8_t* buf, float accel_lsb_per_g,
+                            float gyro_lsb_per_dps);
+
+// Gravity direction in the sensor frame, as a unit vector.
+//
+// A complementary filter on the vector itself instead of on roll and pitch, so
+// it works whichever way the board is mounted and has no sign conventions to
+// get wrong. The gyro carries it through bumps and braking; the accelerometer
+// pulls it back slowly so gyro drift cannot build up.
+struct GravityFilter {
+    bool ready = false;
+    float x = 0.0f, y = 0.0f, z = 1.0f;
+};
+
+// accel_weight is the share of the accelerometer per update, about 0.02.
+// Samples whose magnitude is more than accel_reject_g away from 1 g are being
+// shaken or braked, so only the gyro is used for them.
+void gravity_filter_update(GravityFilter& f, const ImuSample& s, float dt_s,
+                           float accel_weight, float accel_reject_g);
+
+// Which sensor axis points up: 0..2 = +X, +Y, +Z, 3..5 = -X, -Y, -Z. Picks the
+// axis closest to the gravity vector, so any mounting that is square to the
+// chair works. Chosen once at boot.
+int up_axis(const GravityFilter& f);
+
+// Angle between the axis and the gravity vector, degrees. At boot this is how
+// far the board is from square; while driving it is the total tilt.
+float angle_from_axis(const GravityFilter& f, int axis);
 
 struct Euler {
-    float heading = 0.0f;   // degrees
+    float heading = 0.0f;   // degrees, unused without a magnetometer
     float roll = 0.0f;
     float pitch = 0.0f;
 };
 
-// Euler angles are three signed 16 bit little endian values in 1/16 degree.
-// buf is six bytes from register 0x1A. Decoding here instead of in the I2C
-// driver lets it be checked against known bytes with no hardware.
-Euler decode_euler(const uint8_t* buf);
-
-struct CalibStatus {
-    uint8_t system = 0;      // each 0 to 3, 3 is fully calibrated
-    uint8_t gyro = 0;
-    uint8_t accel = 0;
-    uint8_t mag = 0;
-};
-
-CalibStatus decode_calib(uint8_t reg);
+// Roll and pitch relative to the up axis. Signs follow the sensor's axes, so
+// only the size is meaningful until the mounting is known.
+Euler tilt_angles(const GravityFilter& f, int axis);
 
 // True when tilted too far to drive. The IMU does not command motors (report
 // 3.6.6), so this goes to the Pi as a flag instead of acting locally.

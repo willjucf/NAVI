@@ -4,9 +4,9 @@
 
 CONFIG_IDF_TARGET="esp32"
 
-# Console and logs on UART0, never the packet UART. On the PCB the CP2102
-# shares IO16 and IO17 with the Pi link, so logs on UART2 would land in the
-# packet stream. See docs/wiring.md.
+# Console and logs on UART0, the same UART as the Pi link (CP2102 on the PCB,
+# the USB bridge on a dev kit). The Pi only displays log lines and the packet
+# parser ignores anything outside <...>, so sharing is harmless.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_NUM=0
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

@@ -20,6 +20,14 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 PROC_WIDTH = 960          # wide frames are downscaled to this before processing
 MIN_AREA_FRAC = 0.004     # blob must cover 0.4% of the frame to count
+
+# Red needs a bigger blob than green. Across four color_capture.py
+# sessions every false red (shadowed skin, tan fabric, specks) was at most 0.5%
+# of the frame and every real red marker was at least 3.1%. 1% sits between
+# with margin, and a letter size red sheet still clears it to about 4 m.
+# Knuckle skin at the 0.4% floor was overriding green targets.
+RED_MIN_AREA_FRAC = 0.01
+
 MORPH_KERNEL = 5          # open and close kernel size
 
 # HSV ranges measured with hsv_probe.py on real photos, not guessed. These are
@@ -27,9 +35,16 @@ MORPH_KERNEL = 5          # open and close kernel size
 # reading as a false green, and a dim red marker under the old value floor.
 LOWER_GREEN = np.array([35, 50, 40])
 UPPER_GREEN = np.array([90, 255, 255])
-LOWER_RED_1 = np.array([0, 130, 70])
-UPPER_RED_1 = np.array([10, 255, 255])
-LOWER_RED_2 = np.array([170, 130, 70])
+
+# Red retuned 2026-09-25 from two color_capture.py sessions. Skin and
+# tan fabric under warm light (hue 5 to 12, sat 76 to 119) passed as red. Real
+# red measured hue 0 to 3 or 172 to 179, sat 170 to 205. Hue within 6 of pure
+# red and a sat floor of 150 removed every false red and kept every real one.
+# Value floor stays 70 so the dim red regression still passes. Report Table
+# 6.11.1 needs updating.
+LOWER_RED_1 = np.array([0, 150, 70])
+UPPER_RED_1 = np.array([6, 255, 255])
+LOWER_RED_2 = np.array([172, 150, 70])
 UPPER_RED_2 = np.array([179, 255, 255])
 
 
@@ -53,6 +68,10 @@ UI_FPS = 30                # UI redraws on its own clock, separate from vision
 
 # Time of Flight depth (report 3.7.4, 3.7.9)
 
+# Fallback /dev/videoN for the ToF if auto detect fails. With the webcam in it
+# is video2, since the webcam takes video0 and video1.
+DEPTH_VIDEO_INDEX = 2
+
 DEPTH_WIDTH = 240          # Arducam ToF resolution from 3.7.4
 DEPTH_HEIGHT = 180
 
@@ -72,12 +91,28 @@ ZONE_CAUTION_MM = 1200
 # STOP (6.11.2).
 ZONE_MIN_VALID_FRAC = 0.10
 
+# Each zone is judged by its nearest 5% of readings, not the median.
+# With tof_capture.py the median missed a hand at 15 to 60 cm on every frame.
+# The 5th percentile caught all of them and empty scenes stayed CLEAR. See
+# zone_stats in navi_depth.py.
+ZONE_PERCENTILE = 5
+
 
 # UART link to the ESP32 (report 6.13)
 
-# On a Pi 5 the GPIO14/15 UART is /dev/ttyAMA0 once enable_uart=1 is set and the
-# serial console is released. Setup is in README.md.
-SERIAL_PORT = "/dev/ttyAMA0"
+# Pi USB -> CP2102 (Vision PCB, or the dev kit's own bridge) -> ESP32 UART0.
+# The by-id name survives replugging and reboots, so prefer it. Falls back to
+# /dev/ttyUSB0, and --port overrides both.
+def _find_serial_port():
+    import glob
+    for pattern in ("/dev/serial/by-id/*CP210*", "/dev/serial/by-id/*CP2102*"):
+        hits = sorted(glob.glob(pattern))
+        if hits:
+            return hits[0]
+    return "/dev/ttyUSB0"
+
+
+SERIAL_PORT = _find_serial_port()
 SERIAL_BAUD = 115200
 
 # The ESP32 halts after 500 ms without a valid packet (6.13, 6.16). We send
@@ -102,20 +137,17 @@ METRICS_CSV = os.path.join(OUTPUT_DIR, "metrics.csv")
 # The firmware uses firmware/main/navi_pins.h. This copy lets the Pi side and
 # docs report the wiring. Change one, change both.
 #
-# Two gotchas, see README.md: UART TX and RX are swapped from the usual
-# UART2 labels, and the HC SR04 ECHO lines need a divider rev 1.0 lacks.
+# Version C, the final MCU PCB. See docs/NAVI/pin-versions.md.
 
 ESP32_PINS = {
-    "UART_TX": 16,         # goes to Pi GPIO15 (RXD)
-    "UART_RX": 17,         # comes from Pi GPIO14 (TXD)
-    "ESTOP": 12,           # button to GND, active low
+    "UART_TX": 1,          # UART0 TXD0, through the CP2102
+    "UART_RX": 3,          # UART0 RXD0
+    "ESTOP": 25,           # button to GND, active low (P2 pin 1)
     "RELAY": 14,           # motor cutoff relay (report 3.9.5)
     "LED": 4,
     "BUZZER": 5,
-    "USS1_TRIG": 18,
-    "USS1_ECHO": 19,
-    "USS2_TRIG": 27,
-    "USS2_ECHO": 26,
-    "I2C_SDA": 21,         # BNO055
+    "USS_A": 26,           # ultrasonic header U1 pin 2; the firmware works
+    "USS_B": 27,           # out which is trigger and which is echo
+    "I2C_SDA": 21,         # onboard ICM-20948
     "I2C_SCL": 22,
 }

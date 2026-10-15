@@ -132,17 +132,17 @@ class UartThread(threading.Thread):
         self.stale_downgrades = 0
         self.errors = 0
         self._lock = threading.Lock()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def last_sent(self):
         with self._lock:
             return self.sent[-1] if self.sent else None
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             packet, stamped = self.source()
             if packet is None:
                 packet = STOP_PACKET
@@ -164,7 +164,7 @@ class UartThread(threading.Thread):
                 # covers a link that is really gone.
                 self.errors += 1
 
-            self._stop.wait(cfg.UART_TX_INTERVAL_S)
+            self._stop_event.wait(cfg.UART_TX_INTERVAL_S)
 
 
 class NullPort:
@@ -193,12 +193,51 @@ def open_serial(port=None, baud=None):
     port = port or cfg.SERIAL_PORT
     baud = baud or cfg.SERIAL_BAUD
     try:
-        return serial.Serial(port, baud, timeout=0, write_timeout=0.1)
+        # DTR and RTS drive the auto reset on EN and IO0 (the CP2102 board and
+        # dev kits both have it). pyserial raises both on open, which can reset
+        # the ESP32 or put it in the bootloader. Hold them low before opening.
+        link = serial.Serial()
+        link.port = port
+        link.baudrate = baud
+        link.timeout = 0
+        link.write_timeout = 0.1
+        link.dtr = False
+        link.rts = False
+        link.open()
+        return link
     except Exception as exc:
         raise RuntimeError(
-            "Could not open %s at %d baud (%s). Check that enable_uart=1 is "
-            "set and the serial console has been released. See COMMANDS.md."
+            "Could not open %s at %d baud (%s). Check the USB cable to the CP2102 "
+            "board, that nothing else (idf.py monitor, esp_link_test.py) has "
+            "the port open, and that you are in the dialout group."
             % (port, baud, exc)) from exc
+
+
+def start_esp_log(link):
+    """Print ESP32 log lines coming back over USB.
+
+    The firmware logs on the same UART as the packets, so status comes back
+    up the cable. Only safety related lines are shown to keep output readable.
+    """
+    def run():
+        buf = b""
+        while True:
+            try:
+                chunk = link.read(256)
+            except Exception:
+                return
+            if not chunk:
+                time.sleep(0.02)
+                continue
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                line = raw.decode("ascii", "replace").strip()
+                if any(k in line for k in ("HALTED", "armed", "state=", "discarded",
+                                           "e stop", "ICM-20948",
+                                           "ultrasonic")):
+                    print("  esp> " + line)
+    threading.Thread(target=run, daemon=True, name="esp-log").start()
 
 
 # Metrics (report 6.19)
@@ -414,6 +453,9 @@ class NaviSystem:
                 self.port = open_serial(self.args.port, self.args.baud)
                 print("  uart   : %s at %d baud" % (self.args.port or cfg.SERIAL_PORT,
                                                     self.args.baud or cfg.SERIAL_BAUD))
+                if getattr(self.args, "esp_log", False):
+                    start_esp_log(self.port)
+                    print("  esp log: echoing the ESP32 status lines")
             except RuntimeError as exc:
                 print("  uart   : %s" % exc)
                 print("           falling back to print only")
@@ -468,7 +510,82 @@ class NaviSystem:
 
 # Main loop
 
-def run_loop(sys_, kb):
+def depth_brief(depth):
+    """Short 'D 2205C 1916C 1814C' readout of the three ToF zones."""
+    if not depth:
+        return "D off                "
+    parts = []
+    for name in ("left", "center", "right"):
+        z = depth["zones"][name]
+        mm = z["distance_mm"]
+        parts.append(("----" if mm is None else "%4d" % min(mm, 9999))
+                     + z["verdict"][0])
+    return "D " + " ".join(parts)
+
+
+class DebugLog:
+    """One CSV row per new vision result, for replaying a session.
+
+    Only with --log. Records everything the decision used, so a wrong STOP or
+    twitchy turn can be traced to the frame that caused it.
+    """
+
+    FIELDS = ["t", "state", "command", "packet", "status", "green_area",
+              "red_area", "green_cx", "d_left", "d_center", "d_right",
+              "v_left", "v_center", "v_right", "valid_left", "valid_center",
+              "valid_right", "depth_reason"]
+
+    def __init__(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.path = path
+        self.fh = open(path, "w", newline="")
+        self.w = csv.writer(self.fh)
+        self.w.writerow(self.FIELDS)
+        self.t0 = time.perf_counter()
+        self.snap_dir = path[:-4] + "_snaps"
+        os.makedirs(self.snap_dir, exist_ok=True)
+        self.last_cat, self.last_snap, self.snaps = None, 0.0, 0
+
+    def write(self, state, command, packet, det):
+        depth = det.get("depth") or {}
+        zones = depth.get("zones", {})
+        row = ["%.3f" % (time.perf_counter() - self.t0), state, command,
+               packet, det.get("status", ""), det.get("green_area", 0),
+               det.get("red_area", 0), (det.get("centroid") or ("",))[0]]
+        for key in ("distance_mm", "verdict", "valid_frac"):
+            for name in ("left", "center", "right"):
+                v = zones.get(name, {}).get(key, "")
+                if key == "valid_frac" and v != "":
+                    v = "%.2f" % v
+                row.append("" if v is None else v)
+        row.append(depth.get("reason", ""))
+        self.w.writerow(row)
+
+    def snap(self, item, category):
+        """Save an annotated frame when the decision category changes.
+
+        Rate limited so flicker cannot flood the disk. Named by session time
+        so it matches its CSV row.
+        """
+        now = time.perf_counter()
+        if category == self.last_cat or now - self.last_snap < 0.5:
+            return
+        self.last_cat, self.last_snap = category, now
+        from navi_vision import annotate
+        import cv2
+        name = "%07.2fs_%s.jpg" % (now - self.t0, category)
+        try:
+            cv2.imwrite(os.path.join(self.snap_dir, name),
+                        annotate(item["frame"], item["det"]))
+            self.snaps += 1
+        except Exception:
+            pass
+
+    def close(self):
+        self.fh.close()
+
+
+def run_loop(sys_, kb, debug_log=None):
     """Run vision results through the FSM and hand the packet to Thread 3.
 
     This loop never touches the camera, draws, or writes serial. Those have
@@ -477,6 +594,7 @@ def run_loop(sys_, kb):
     print("Keys: [m] MANUAL/AUTO   [e] or space E-STOP   [r] reset   [q] quit\n")
     last_print = 0.0
     last_det = None
+    last_item = None
 
     while True:
         ev = kb.poll()
@@ -495,16 +613,24 @@ def run_loop(sys_, kb):
 
         command, packet, flag = sys_.fsm.resolve(last_det)
         sys_.set_command(packet)
+        if debug_log is not None and item is not None and item is not last_item:
+            debug_log.write(sys_.fsm.state, command, packet, item["det"])
+            # first word of the reason: RED, GREEN, DEPTH or NO
+            debug_log.snap(item, item["det"]["status"].split()[0])
+        last_item = item
 
         now = time.perf_counter()
         if now - last_print >= cfg.PRINT_EVERY:
             last_print = now
-            temp, mem = read_temp_c(), read_mem_pct()
+            temp = read_temp_c()
+            # Show why, not just what. The reason and depth zones
+            # make "it stopped for no reason" debuggable.
+            reason = last_det["status"] if last_det else "no frame yet"
             sys.stdout.write(
-                "\r[%-6s] %-22s %-12s vis:%5.1f tx:%5.1f  %s  mem:%s temp:%s  "
-                % (sys_.fsm.state, command, packet,
-                   sys_.vision.rate.fps(), sys_.uart.rate.fps(), read_cpu(),
-                   "n/a" if mem is None else "%3.0f%%" % mem,
+                "\r[%-6s] %-12s %-26s %s  vis:%4.1f tx:%4.1f temp:%s  "
+                % (sys_.fsm.state, packet, reason[:26],
+                   depth_brief(last_det.get("depth") if last_det else None),
+                   sys_.vision.rate.fps(), sys_.uart.rate.fps(),
                    "n/a" if temp is None else "%4.1fC" % temp))
             sys.stdout.flush()
 
@@ -559,8 +685,12 @@ def main():
                     help="use the synthetic depth source instead of the camera")
     ap.add_argument("--window", action="store_true",
                     help="also run the UI thread and show a live window")
+    ap.add_argument("--esp-log", action="store_true",
+                    help="print the ESP32 status lines coming back over USB")
     ap.add_argument("--scripted", action="store_true",
                     help="force the scripted sequence even on a terminal")
+    ap.add_argument("--log", action="store_true",
+                    help="write one CSV row per frame to output/debug_<time>.csv")
     args = ap.parse_args()
 
     try:
@@ -569,17 +699,28 @@ def main():
         print("ERROR: %s" % exc)
         return 1
 
+    debug_log = None
+    if args.log:
+        debug_log = DebugLog(os.path.join(
+            cfg.OUTPUT_DIR, "debug_%s.csv"
+            % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
+        print("  log    : %s" % debug_log.path)
+
     kb = Keyboard()
     sys_.start()
     try:
         if kb.enabled and not args.scripted:
-            run_loop(sys_, kb)
+            run_loop(sys_, kb, debug_log)
         else:
             run_scripted(sys_)
     except KeyboardInterrupt:
         pass
     finally:
         kb.restore()
+        if debug_log is not None:
+            debug_log.close()
+            print("\nDebug log written to %s" % debug_log.path)
+            print("%d snapshots in %s" % (debug_log.snaps, debug_log.snap_dir))
         sys_.shutdown()
         sys_.metrics.summary(
             label=args.source,

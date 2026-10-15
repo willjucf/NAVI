@@ -15,6 +15,7 @@ Run it directly to watch the zones update:
 """
 
 import argparse
+import multiprocessing
 import threading
 import time
 
@@ -35,28 +36,38 @@ ZONE_NAMES = ("left", "center", "right")
 def zone_stats(zone_mm):
     """Reduce one zone of the depth map to a distance and a verdict.
 
-    Distance is the median of valid pixels, not the mean or minimum. Dropouts
-    and reflections show up as lone extreme values and both of those chase
-    them. The minimum would flag a hazard from one bad pixel and stop the chair
-    constantly.
+    Changed from the median after a tof_capture.py run on 2026-09-25.
+    With the median a hand at 15, 30 and 60 cm read CLEAR on every frame because:
 
-    Too few valid pixels returns UNKNOWN, not a number. Blind is not clear, so
-    the caller treats UNKNOWN as blocked, same as no detection meaning STOP in
-    6.11.2.
+    1. The median ignores anything under half the zone. A hand at 30 cm filled
+       a quarter of the center zone and the ceiling behind it won.
+    2. Very close objects saturate the sensor. Pixels under DEPTH_MIN_MM were
+       thrown out, and some came back as fake 3 to 4 m, so a hand at 15 cm
+       read 3000 mm.
+
+    Now the distance is the ZONE_PERCENTILE (5th) percentile of every non
+    dropout reading, too close ones included. On the same capture that blocked
+    all ten positions at 5 to 60 cm, called a hand at 1 m CAUTION, and kept
+    both empty scenes CLEAR. An object must fill about 5% of the zone, so a few
+    shiny pixels still cannot stop the chair.
+
+    Zero is a dropout and anything past DEPTH_MAX_MM is out of range, so both
+    are dropped. Too few usable pixels returns UNKNOWN, which the caller treats
+    as blocked since blind is not clear (report 6.11.2).
     """
     total = zone_mm.size
     if total == 0:
         return {"distance_mm": None, "verdict": UNKNOWN, "valid_frac": 0.0,
                 "valid_px": 0, "total_px": 0}
 
-    valid = zone_mm[(zone_mm >= cfg.DEPTH_MIN_MM) & (zone_mm <= cfg.DEPTH_MAX_MM)]
-    valid_frac = float(valid.size) / float(total)
+    usable = zone_mm[(zone_mm > 0) & (zone_mm <= cfg.DEPTH_MAX_MM)]
+    valid_frac = float(usable.size) / float(total)
 
     if valid_frac < cfg.ZONE_MIN_VALID_FRAC:
         return {"distance_mm": None, "verdict": UNKNOWN, "valid_frac": valid_frac,
-                "valid_px": int(valid.size), "total_px": int(total)}
+                "valid_px": int(usable.size), "total_px": int(total)}
 
-    distance = int(round(float(np.median(valid))))
+    distance = int(round(float(np.percentile(usable, cfg.ZONE_PERCENTILE))))
     if distance < cfg.ZONE_BLOCKED_MM:
         verdict = BLOCKED
     elif distance < cfg.ZONE_CAUTION_MM:
@@ -65,7 +76,7 @@ def zone_stats(zone_mm):
         verdict = CLEAR
 
     return {"distance_mm": distance, "verdict": verdict, "valid_frac": valid_frac,
-            "valid_px": int(valid.size), "total_px": int(total)}
+            "valid_px": int(usable.size), "total_px": int(total)}
 
 
 def zone_map(depth_mm):
@@ -119,6 +130,28 @@ def zone_map(depth_mm):
 
 # Depth sources
 
+def find_tof_video_index():
+    """The /dev/videoN index of the Pi 5 CSI receiver.
+
+    The Pi 5 CSI nodes are named rp1-cfe-*, and the first csi2_ch0 one is what
+    the Arducam SDK opens. Falls back to cfg.DEPTH_VIDEO_INDEX with no sysfs,
+    like on a laptop.
+    """
+    import glob
+    import os
+    import re
+    found = []
+    for path in glob.glob("/sys/class/video4linux/video*"):
+        try:
+            with open(os.path.join(path, "name")) as fh:
+                name = fh.read().strip()
+        except OSError:
+            continue
+        if name.startswith("rp1-cfe-csi2_ch0"):
+            found.append(int(re.sub(r"\D", "", os.path.basename(path))))
+    return min(found) if found else cfg.DEPTH_VIDEO_INDEX
+
+
 class ArducamSource:
     """The real Arducam ToF camera on the Pi ribbon connector."""
 
@@ -135,7 +168,12 @@ class ArducamSource:
 
         # The library API changed between releases. Current builds take a
         # connection type and device index in open().
-        ret = self.cam.open(ac.Connection.CSI, 0)
+        #
+        # The index is the /dev/videoN number, not the CSI port. With the
+        # webcam in it takes video0 and video1 and the ToF is video2, so a hard
+        # coded 0 opens the webcam and fails.
+        self.index = find_tof_video_index()
+        ret = self.cam.open(ac.Connection.CSI, self.index)
         if ret != 0:
             raise RuntimeError("Arducam open failed with code %s. Check the "
                                "ribbon cable seating and that dtoverlay is set."
@@ -163,8 +201,8 @@ class ArducamSource:
         return depth
 
     def describe(self):
-        return "Arducam ToF over CSI ribbon, %dx%d" % (cfg.DEPTH_WIDTH,
-                                                       cfg.DEPTH_HEIGHT)
+        return "Arducam ToF over CSI ribbon, %dx%d on /dev/video%d" % (
+            cfg.DEPTH_WIDTH, cfg.DEPTH_HEIGHT, self.index)
 
     def close(self):
         try:
@@ -226,18 +264,65 @@ class SimDepthSource:
 
 # Background reader
 
+def _arducam_worker(conn, stop_evt):
+    """Child process that owns the Arducam and sends back zone summaries only.
+
+    A separate process because the Arducam library holds the GIL while waiting
+    for a frame. On the Pi 5 other threads ran at a quarter speed during reads,
+    and 200 ms timeouts froze vision for the full 200 ms, dropping the control
+    loop from 118 fps to under 5. A process has its own GIL. Only the small
+    zone summary crosses the pipe, never the depth map.
+    """
+    # Ctrl C hits the whole process group. The parent handles shutdown through
+    # stop_evt, so ignore it here instead of dying mid read with a traceback.
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        src = ArducamSource()
+    except Exception as exc:
+        conn.send(("error", str(exc)))
+        conn.close()
+        return
+    conn.send(("ready", src.describe()))
+    try:
+        while not stop_evt.is_set():
+            depth = src.read()
+            if depth is None:
+                continue
+            conn.send(("zones", zone_map(depth)))
+    except (BrokenPipeError, EOFError, OSError):
+        pass                          # parent went away
+    except Exception as exc:
+        try:
+            conn.send(("error", repr(exc)))
+        except Exception:
+            pass
+    finally:
+        src.close()
+
+
 class DepthReader:
-    """Polls a depth source on its own thread and keeps the latest zones.
+    """Polls a depth source in the background and keeps the latest zones.
 
     Vision calls latest() every frame and must never block, so only the newest
     result is kept (same single slot idea as report 6.14).
+
+    The real Arducam runs in a child process (see _arducam_worker). Injected
+    sources and the simulator use a plain thread, which the tests use.
     """
 
     def __init__(self, source=None, sim=False):
+        self._proc = None
+        self._conn = None
+        self._proc_stop = None
+        self._describe = None
         if source is not None:
             self.source = source
+        elif sim:
+            self.source = SimDepthSource()
         else:
-            self.source = SimDepthSource() if sim else ArducamSource()
+            self.source = None
+            self._start_process()
         self._latest = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -245,8 +330,28 @@ class DepthReader:
         self.frames = 0
         self.error = None
 
+    def _start_process(self):
+        # spawn, not fork. The webcam and other threads may already be open
+        # here and a forked child would inherit them.
+        ctx = multiprocessing.get_context("spawn")
+        recv_end, send_end = ctx.Pipe(duplex=False)
+        self._proc_stop = ctx.Event()
+        self._proc = ctx.Process(target=_arducam_worker, name="depth-proc",
+                                 args=(send_end, self._proc_stop), daemon=True)
+        self._proc.start()
+        send_end.close()
+        self._conn = recv_end
+        if not recv_end.poll(20.0):
+            self._proc.terminate()
+            raise RuntimeError("Arducam process did not start within 20 s")
+        kind, payload = recv_end.recv()
+        if kind != "ready":
+            self._proc.join(timeout=2.0)
+            raise RuntimeError(payload)
+        self._describe = payload + ", own process"
+
     def describe(self):
-        return self.source.describe()
+        return self._describe if self._proc else self.source.describe()
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name="depth",
@@ -255,6 +360,9 @@ class DepthReader:
         return self
 
     def _run(self):
+        if self._proc is not None:
+            self._run_process()
+            return
         try:
             while not self._stop.is_set():
                 depth = self.source.read()
@@ -272,11 +380,35 @@ class DepthReader:
         with self._lock:
             return self._latest
 
+    def _run_process(self):
+        while not self._stop.is_set():
+            try:
+                if not self._conn.poll(0.1):
+                    continue
+                kind, payload = self._conn.recv()
+            except (EOFError, OSError) as exc:
+                self.error = exc
+                return
+            if kind == "zones":
+                with self._lock:
+                    self._latest = payload
+                    self.frames += 1
+            elif kind == "error":
+                self.error = RuntimeError(payload)
+                return
+
     def stop(self):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
-        self.source.close()
+        if self._proc is not None:
+            self._proc_stop.set()
+            self._proc.join(timeout=3.0)
+            if self._proc.is_alive():
+                self._proc.terminate()
+            self._conn.close()
+        else:
+            self.source.close()
 
 
 # Entry point

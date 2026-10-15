@@ -13,3 +13,9 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/test/protocol_echo
 firmware/test/protocol_echo.exe
+firmware_tests/*/build/
+firmware_tests/*/sdkconfig
+firmware_tests/*/sdkconfig.old
+
+# Merged image for flashing from the Pi, rebuilt from source
+*.bin

@@ -121,8 +121,7 @@ def check_config():
             "UART_TX": "NAVI_UART_TX_PIN", "UART_RX": "NAVI_UART_RX_PIN",
             "ESTOP": "NAVI_ESTOP_PIN", "RELAY": "NAVI_RELAY_PIN",
             "LED": "NAVI_LED_PIN", "BUZZER": "NAVI_BUZZER_PIN",
-            "USS1_TRIG": "NAVI_USS1_TRIG_PIN", "USS1_ECHO": "NAVI_USS1_ECHO_PIN",
-            "USS2_TRIG": "NAVI_USS2_TRIG_PIN", "USS2_ECHO": "NAVI_USS2_ECHO_PIN",
+            "USS_A": "NAVI_USS_PIN_A", "USS_B": "NAVI_USS_PIN_B",
             "I2C_SDA": "NAVI_I2C_SDA_PIN", "I2C_SCL": "NAVI_I2C_SCL_PIN",
         }
         mismatches = []
@@ -180,8 +179,11 @@ def check_config():
 
     # Measured values from report Table 6.11.1. A silent change would make the
     # report wrong.
+    # Red retuned 2026-09-25 (navi_config.py). Report Table 6.11.1 still has
+    # the old values and needs updating.
     expected = {"LOWER_GREEN": [35, 50, 40], "UPPER_GREEN": [90, 255, 255],
-                "LOWER_RED_1": [0, 130, 70], "LOWER_RED_2": [170, 130, 70]}
+                "LOWER_RED_1": [0, 150, 70], "UPPER_RED_1": [6, 255, 255],
+                "LOWER_RED_2": [172, 150, 70]}
     bad = [k for k, v in expected.items() if list(getattr(cfg, k)) != v]
     if bad:
         record("config", "hsv matches report Table 6.11.1", FAIL,
@@ -313,7 +315,7 @@ def check_serial():
         return
     if not os.path.exists(port):
         record("serial", "port present", FAIL,
-               "%s missing, is enable_uart=1 set in config.txt" % port)
+               "%s missing, is the ESP32 USB cable in? try ls /dev/ttyUSB* /dev/ttyACM*" % port)
         return
     record("serial", "port present", PASS, port)
 

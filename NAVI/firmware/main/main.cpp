@@ -8,9 +8,8 @@
 //   two watchdogs, both 500 ms (report 6.13 and 6.16)
 //   motor output, ramped up and dropped instantly on a stop
 //
-// Logging stays on UART0. On the PCB the CP2102 shares IO16 and IO17 with the
-// Pi link, so logging on the packet UART would inject text into the packet
-// stream. See docs/wiring.md.
+// Logging shares UART0 with the Pi link. Log lines go up to the Pi, which only
+// displays them, and the packet parser drops anything outside <...>.
 
 #include <cstdio>
 #include <cstring>
@@ -255,12 +254,13 @@ static void control_task(void* arg) {
             last_report_us = now;
             ESP_LOGI(TAG,
                      "state=%s pwm=%d,%d target=%d,%d flag=%d "
-                     "uss=%ld/%ldmm tilt=%.1f/%.1f frames=%lu/%lu",
+                     "uss=%ldmm%s tilt=%.1f/%.1f%s frames=%lu/%lu",
                      halt_reason_name(last_reason),
                      s_motor.left, s_motor.right,
                      target.left, target.right, target.safety_flag ? 1 : 0,
-                     (long)sensors.left_mm, (long)sensors.right_mm,
+                     (long)sensors.uss_mm, sensors.uss_ok ? "" : "(none)",
                      sensors.euler.roll, sensors.euler.pitch,
+                     sensors.imu_ok ? "" : "(no imu)",
                      (unsigned long)s_parser.good_frames(),
                      (unsigned long)s_parser.bad_frames());
         }
