@@ -34,7 +34,7 @@ Packets from the Pi are `<LEFT_PWM,RIGHT_PWM,SAFETY_FLAG>`, PWM from -255 to 255
 | `firmware/` | ESP32 firmware for the final PCB (ESP-IDF v5.3 or later) |
 | `firmware/test/` | native unit tests for the firmware logic, run on the Pi with `make` |
 | `firmware_tests/uss_test/` | standalone ultrasonic test with wiring diagnosis |
-| `firmware_wireless/` | bench build of `firmware/` plus WiFi, Bluetooth and WiFi updates (see below) |
+| `firmware_wireless/` | `firmware/` plus WiFi, Bluetooth and WiFi updates, for bench work (see below) |
 
 ## Pi setup
 
@@ -74,7 +74,6 @@ CP2102's auto reset. If it does not connect, hold BOOT, tap RESET, release BOOT.
 ## Wiring notes (final PCB)
 
 - Pi link: UART0 (TX IO1, RX IO3) through the CP2102 board, `/dev/ttyUSB0`.
-  The same build runs on a plain ESP32 dev kit on the Pi's USB.
 - E-stop on IO25 (to GND), relay IO14, LED IO4, buzzer IO5.
 - Ultrasonic on header U1, IO26/IO27. The firmware detects which pin is
   trigger and which is echo. Echo must not see 5 V: divider, or 3.3 V supply.
@@ -93,7 +92,7 @@ CP2102's auto reset. If it does not connect, hold BOOT, tap RESET, release BOOT.
 
 ## Wireless bench build (`firmware_wireless/`)
 
-`firmware/` plus the following, for bench work while the Vision board CP2102 is being fixed:
+`firmware/` plus the following, for bench work without a cable:
 
 - **WiFi:** joins the iPhone hotspot, then runs a TCP server on port 3333. Use `nc <ip> 3333`.
 - **Bluetooth:** BLE Nordic UART Service, advertised as `NAVI-ESP32`. Connect with
@@ -107,35 +106,32 @@ CP2102's auto reset. If it does not connect, hold BOOT, tap RESET, release BOOT.
 
 ## Test status (2026-10-26)
 
-✅ tested on hardware · 🟡 partly tested · ❌ tested and not working · ⬜ not tested yet
+Status of each part on the final PCB system.
+✅ working · 🟡 partly working · ❌ not working · ⬜ not tested yet
 
-| Part | Status | Evidence |
+| Part | Status | Notes |
 |---|---|---|
-| Unit tests (`tests/`) | ✅ | 129/129 pass on the Pi, 2026-10-26 |
-| Firmware logic (`firmware/test/`) | ✅ | 487 checks pass, 2026-10-26 |
-| `selftest.py --quick` | ✅ | 11/11, 2026-10-26 |
-| Webcam + red/green detection | ✅ | EMEET 1280x720 at 30 fps; red retuned live 2026-10-22 |
-| ToF depth zones | ✅ | Replacement Arducam; zones 1 m / 2 m set 2026-10-22 |
-| LCD, fullscreen window on X11 | ✅ | 2026-10-22, `DISPLAY=:0`, rotation 270 |
-| LCD `--lcd` (raw `/dev/fb0`) | ⬜ | Not used. X11 draws over fb0 while the desktop runs |
-| Full system (`tests-interactive/test_final.py`) | ✅ | Auto and manual modes on the ESP dev kit, 2026-10-17 to 10-22 |
-| Pi to ESP link, dev kit | ✅ | `esp_link_test.py` 12/12, 2026-10-15 |
-| Pi to ESP link, Vision board to MCU PCB | 🟡 | 5/6 on 2026-10-22, then the Vision CP2102 failed (USB -71). The chip is being replaced |
-| Flashing with auto-reset through the Vision board | ❌ | DTR/RTS "Protocol error" on the old chip. Retest with the new chip |
-| PCB firmware boot on the MCU PCB | ✅ | 2026-10-22, inside the wireless build: E-stop armed IO25, relay IO14, UART0 |
-| Drive packets and relay on the MCU PCB | ⬜ | Never tested with packets on the PCB |
+| Unit tests (`tests/`) | ✅ | 129/129 on the Pi |
+| Firmware logic (`firmware/test/`) | ✅ | 487 checks |
+| `selftest.py --quick` | ✅ | 11/11 |
+| Webcam + red/green detection | ✅ | EMEET 1280x720 at 30 fps, red tuned on the live camera |
+| ToF depth zones | ✅ | Blocked under 1 m, caution 1 to 2 m |
+| LCD (fullscreen window) | ✅ | 3.5" ILI9486 on X11, `DISPLAY=:0`, rotation 270 |
+| LCD `--lcd` (raw `/dev/fb0`) | ⬜ | X11 draws over fb0 while the desktop runs |
+| Full system (`tests-interactive/test_final.py`) | ⬜ on PCBs | Auto and manual modes, all sensors and LCD passed before the PCBs; rerun on the boards |
+| Pi to ESP link (Vision PCB to MCU PCB) | 🟡 | Packets and logs flow; the Vision CP2102 has USB errors and is being replaced |
+| Flashing with auto-reset (DTR/RTS) | ❌ | Failed on the Vision CP2102; retest with the new chip. BOOT + EN works |
+| ESP firmware boot on the MCU PCB | ✅ | E-stop armed on IO25, relay on IO14, UART0 log |
+| Drive packets and relay on the MCU PCB | ⬜ | |
 | E-stop button, buzzer, LED (aux board) | ⬜ | Aux board not connected yet |
-| Ultrasonic, dev kit | ✅ | RCWL-1655 at 3.3 V read 41 to 43 cm, 2026-10-15 (`uss_test`) |
-| Ultrasonic on the PCB (U1) | ❌ | Not detected on 2026-10-22. Check 3.3 V supply and cable |
-| Bumper at 900 / 1100 mm | 🟡 | Hysteresis logic tested by Shay at 300/400. These values set 2026-10-22, not re-verified on hardware |
-| ICM-20948 IMU | ❌ | Nothing answers on I2C. Bus healthy (2026-10-22 scan); suspect nCS / VDDIO. Firmware runs without it |
+| Ultrasonic (U1, IO26/27) | ❌ | Not detected on the PCB. RCWL-1655 works at 3.3 V; check supply and cable |
+| Bumper at 900 / 1100 mm | 🟡 | Trip/release logic tested; these distances not yet checked on hardware |
+| ICM-20948 IMU | ❌ | No I2C answer (bus is healthy); suspect nCS / VDDIO. Tilt is ignored without it |
 | Motor PWM (IO32/33) | ⬜ | Placeholder pins, not routed on the PCB |
-| Wireless: WiFi join and log mirror | ✅ | 2026-10-22 on the MCU PCB, read from the Mac |
-| Wireless: Bluetooth connect | 🟡 | Connected 2026-10-26, but hit a log loop. Fix built, not flashed |
-| Wireless: loop fix, WiFi updates, `navi_ota.py` | ⬜ | Built 2026-10-26, needs one cable flash |
-| `i2cscan` (boot / command) | ✅ / ⬜ | Boot scan ran 2026-10-22; the text command is not tested |
-| `tools/cp_diag.py` | ✅ | Found the Vision CP2102 fault, 2026-10-22 |
-| `tools/navi_ble.py` | ✅ | Scanned and connected, 2026-10-26 |
-| `tools/bumper_test.py` | ⬜ | Never run |
-
-Bench trees that produced these results are in `../bench-history/`.
+| Wireless: WiFi join and log mirror | ✅ | On the MCU PCB |
+| Wireless: Bluetooth connect | 🟡 | Connects; a log loop is fixed in source, not flashed yet |
+| Wireless: WiFi updates (`navi_ota.py`) | ⬜ | Built, needs one cable flash first |
+| `i2cscan` | ✅ boot / ⬜ command | |
+| `tools/cp_diag.py` | ✅ | |
+| `tools/navi_ble.py` | ✅ | Scans and connects |
+| `tools/bumper_test.py` | ⬜ | |

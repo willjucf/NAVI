@@ -14,7 +14,7 @@ Keys:
 """
 import sys, os, time, threading, re
 
-sys.path.insert(0, os.path.expanduser("~/mergetest"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 os.environ.setdefault("DISPLAY", ":0")
 
 import cv2
@@ -31,7 +31,7 @@ RAMP_INTERVAL = 0.05      # 20 Hz update
 RAMP_STEP = max(int(RAMP_PWM_PER_SEC * RAMP_INTERVAL), 4)  # 4 PWM per tick
 
 # --- ESP serial ---
-PORT = "/dev/ttyUSB0"
+PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def open_esp():

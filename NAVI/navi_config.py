@@ -105,7 +105,7 @@ ZONE_PERCENTILE = 5
 
 # UART link to the ESP32 (report 6.13)
 
-# Pi USB -> CP2102 (Vision PCB, or the dev kit's own bridge) -> ESP32 UART0.
+# Pi USB -> CP2102 on the Vision PCB -> ESP32 UART0 on the MCU PCB.
 # The by-id name survives replugging and reboots, so prefer it. Falls back to
 # /dev/ttyUSB0, and --port overrides both.
 def _find_serial_port():
@@ -142,7 +142,7 @@ METRICS_CSV = os.path.join(OUTPUT_DIR, "metrics.csv")
 # The firmware uses firmware/main/navi_pins.h. This copy lets the Pi side and
 # docs report the wiring. Change one, change both.
 #
-# Version C, the final MCU PCB. See docs/NAVI/pin-versions.md.
+# The final MCU PCB. firmware/main/navi_pins.h has the connector pin for each.
 
 ESP32_PINS = {
     "UART_TX": 1,          # UART0 TXD0, through the CP2102

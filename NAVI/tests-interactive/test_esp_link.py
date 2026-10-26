@@ -2,9 +2,14 @@
 
 Run: python3 test_esp_link.py
 """
-import serial, time, re, sys
+import os, re, sys, time
 
-PORT = "/dev/ttyUSB0"
+import serial
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import navi_config as cfg
+
+PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def open_port():

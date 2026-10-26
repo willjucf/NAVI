@@ -3,7 +3,7 @@
 Run: python3 test_tof.py
 """
 import sys, os, time
-sys.path.insert(0, os.path.expanduser("~/usb-bench"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import numpy as np
 import navi_config as cfg
 from navi_depth import ArducamSource

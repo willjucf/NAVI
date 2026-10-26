@@ -1,5 +1,5 @@
-// Temporary wireless links to the ESP32, for bench work while the Vision board
-// is being fixed.
+// Wireless links to the ESP32 for bench work: logs and commands without a
+// cable, and firmware updates over WiFi.
 //
 // Two extra ways in, both speaking the same <L,R,F> packets as the Pi link:
 //   WiFi: joins the hotspot below, TCP server on NAVI_WIFI_TCP_PORT

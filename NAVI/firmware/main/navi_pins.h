@@ -1,9 +1,7 @@
 // NAVI ESP32 pin assignments.
 //
 // Taken from the final MCU PCB (EasyEDA export PCB_MCU-Final_2026-10-06).
-// The same build runs on a plain ESP32 dev kit plugged into the Pi by USB,
-// since both put the Pi link on UART0. Keep in sync with ESP32_PINS in
-// navi_config.py. Full pinout in docs/NAVI/pin-versions.md (version C).
+// Keep in sync with ESP32_PINS in navi_config.py; selftest.py checks them.
 
 #pragma once
 
@@ -12,8 +10,7 @@
 // UART to the Pi 5
 //
 // Pi USB -> CP2102 on the Vision PCB -> 3 wire harness -> MCU P3 -> UART0.
-// On a dev kit the onboard USB bridge sits on the same pins. The log console
-// shares UART0, so log lines go up to the Pi on the same cable. The Pi only
+// The log console shares UART0, so log lines go up to the Pi on the same cable. The Pi only
 // displays them and the packet parser ignores anything outside <...>.
 #define NAVI_UART_PORT      UART_NUM_0
 #define NAVI_UART_TX_PIN    GPIO_NUM_1    // TXD0, P3 pin 4

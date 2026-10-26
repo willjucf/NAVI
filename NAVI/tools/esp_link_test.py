@@ -1,7 +1,7 @@
-"""ESP32 link test over the dev board USB cable. No GPIO wiring needed.
+"""ESP32 link test through the Vision PCB's CP2102.
 
-The ESP32 reads packets and logs on the same UART0 as the
-dev board's USB bridge. So one cable does both: this sends packets, reads back
+The ESP32 reads packets and logs on the same UART0, so one USB cable does
+both: this sends packets, reads back
 the firmware's log of what it did, and checks it.
 
 No motor on the bench, so nothing here can drive one. The highest command sent
@@ -40,8 +40,8 @@ def open_port(port, baud):
     link.port = port
     link.baudrate = baud
     link.timeout = 0.05
-    # DTR and RTS drive EN and IO0 on a dev board. Left high they can hold the
-    # ESP32 in reset or the bootloader.
+    # DTR and RTS drive EN and IO0 through the Vision PCB. Left high they can
+    # hold the ESP32 in reset or the bootloader.
     link.dtr = False
     link.rts = False
     try:

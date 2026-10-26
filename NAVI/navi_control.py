@@ -197,9 +197,9 @@ def open_serial(port=None, baud=None):
     port = port or cfg.SERIAL_PORT
     baud = baud or cfg.SERIAL_BAUD
     try:
-        # DTR and RTS drive the auto reset on EN and IO0 (the CP2102 board and
-        # dev kits both have it). pyserial raises both on open, which can reset
-        # the ESP32 or put it in the bootloader. Hold them low before opening.
+        # DTR and RTS drive the auto reset on EN and IO0 through the Vision
+        # PCB. pyserial raises both on open, which can reset the ESP32 or put
+        # it in the bootloader. Hold them low before opening.
         link = serial.Serial()
         link.port = port
         link.baudrate = baud

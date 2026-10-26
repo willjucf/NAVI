@@ -1,9 +1,9 @@
-"""Ultrasonic bumper check over the dev board USB cable.
+"""Ultrasonic bumper check through the Vision PCB's CP2102.
 
 Sends a slow forward command and prints only the ESP32's state lines, so you
 can watch the bumper stop and release while moving a hand in front of the
-sensors. Expect one HALTED: OBSTACLE when something comes inside 300 mm and one
-"armed and running" about 500 ms after it is past 400 mm again.
+sensor. Expect one HALTED: OBSTACLE when something comes inside 900 mm and one
+"armed and running" about 500 ms after it is past 1100 mm again.
 
 No motor on the bench. The command is 50 PWM, and a stop packet is sent on exit.
 
@@ -44,8 +44,8 @@ def main():
     link.port = args.port
     link.baudrate = args.baud
     link.timeout = 0.05
-    # DTR and RTS drive EN and IO0 on a dev board. Left high they can hold the
-    # ESP32 in reset or the bootloader.
+    # DTR and RTS drive EN and IO0 through the Vision PCB. Left high they can
+    # hold the ESP32 in reset or the bootloader.
     link.dtr = False
     link.rts = False
     link.open()

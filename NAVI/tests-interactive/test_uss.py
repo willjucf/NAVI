@@ -2,7 +2,12 @@
 
 Run: python3 test_uss.py
 """
-import serial, time, re, sys
+import os, re, sys, time
+
+import serial
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import navi_config as cfg
 
 def mm_to_in(mm):
     return mm / 25.4
@@ -14,7 +19,7 @@ DISTANCES = [
     ("2m (79in)",   2000, 1500, 2600),
 ]
 
-PORT = "/dev/ttyUSB0"
+PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def read_uss(seconds=4):

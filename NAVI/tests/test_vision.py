@@ -119,7 +119,7 @@ class TestCalibrationRegressions(unittest.TestCase):
         self.assertEqual(d["flag"], 1)
 
     def test_small_red_speck_does_not_override_green(self):
-        # WILLTEST, found on the Pi 2026-09-25: skin at the knuckles passed as
+        # Found on the Pi 2026-09-25: skin at the knuckles passed as
         # red in a blob just over the old 0.4% floor, and because red outranks
         # green it stopped a real green target. Red now needs 1% of the frame.
         from fixtures import add_blob, BGR_RED

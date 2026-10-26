@@ -7,7 +7,7 @@ Run: python3 test_webcam.py
 """
 import sys, os, time
 
-sys.path.insert(0, os.path.expanduser("~/mergetest"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 # Use the Pi's local X display (the LCD)
 os.environ["DISPLAY"] = ":0"
