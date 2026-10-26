@@ -179,11 +179,11 @@ def check_config():
 
     # Measured values from report Table 6.11.1. A silent change would make the
     # report wrong.
-    # Red retuned 2026-09-25 (navi_config.py). Report Table 6.11.1 still has
-    # the old values and needs updating.
+    # Red retuned 2026-09-25 and again 2026-10-22 (navi_config.py). Report
+    # Table 6.11.1 still has the old values and needs updating.
     expected = {"LOWER_GREEN": [35, 50, 40], "UPPER_GREEN": [90, 255, 255],
-                "LOWER_RED_1": [0, 150, 70], "UPPER_RED_1": [6, 255, 255],
-                "LOWER_RED_2": [172, 150, 70]}
+                "LOWER_RED_1": [0, 140, 70], "UPPER_RED_1": [7, 255, 255],
+                "LOWER_RED_2": [160, 140, 70]}
     bad = [k for k, v in expected.items() if list(getattr(cfg, k)) != v]
     if bad:
         record("config", "hsv matches report Table 6.11.1", FAIL,

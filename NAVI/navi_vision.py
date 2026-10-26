@@ -22,10 +22,78 @@ import os
 import threading
 import time
 
+# Draw on the Pi's own screen even when started over SSH. X11 owns the
+# display, so point at it unless the caller already did.
+os.environ.setdefault("DISPLAY", ":0")
+
 import cv2
 import numpy as np
 
 import navi_config as cfg
+
+
+# LCD framebuffer output (ILI9486, 320x480 RGB565), for --lcd
+#
+# Writes frames straight to /dev/fb0. While X11 is running it owns the screen
+# and can draw over this, which is why the normal window is fullscreen on the
+# same display. Kept for running without a desktop.
+
+class LCDWriter:
+    """Write OpenCV frames to the SPI LCD framebuffer."""
+
+    def __init__(self, fb="/dev/fb0"):
+        self.fb = fb
+        self.w, self.h, self.bpp = self._geometry()
+        # Unbind the text console so it stops drawing over fb0.
+        for vtcon in sorted(os.listdir("/sys/class/vtconsole/")):
+            bind_path = "/sys/class/vtconsole/%s/bind" % vtcon
+            try:
+                with open(bind_path, "w") as fh:
+                    fh.write("0")
+            except PermissionError:
+                os.system("sudo sh -c 'echo 0 > %s'" % bind_path)
+            except Exception:
+                pass
+        self._fh = None
+
+    def _geometry(self):
+        base = "/sys/class/graphics/%s" % os.path.basename(self.fb)
+        try:
+            with open(base + "/virtual_size") as fh:
+                w, h = (int(v) for v in fh.read().strip().split(","))
+            with open(base + "/bits_per_pixel") as fh:
+                bpp = int(fh.read().strip())
+            return w, h, bpp
+        except Exception:
+            return 320, 480, 16
+
+    def write(self, frame):
+        """Write an OpenCV BGR frame to the LCD, resized to fit."""
+        if self._fh is None:
+            try:
+                self._fh = open(self.fb, "wb")
+            except PermissionError:
+                return
+        resized = cv2.resize(frame, (self.w, self.h))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        r = (rgb[:, :, 0].astype(np.uint16) >> 3) << 11
+        g = (rgb[:, :, 1].astype(np.uint16) >> 2) << 5
+        b = rgb[:, :, 2].astype(np.uint16) >> 3
+        pixels = (r | g | b).astype("<u2")
+        try:
+            self._fh.seek(0)
+            self._fh.write(pixels.tobytes())
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def close(self):
+        if self._fh:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
 
 
 # Detection core, unchanged from SD1
@@ -511,6 +579,8 @@ def main():
                     help="stop after N seconds, 0 means run until q or Ctrl C")
     ap.add_argument("--depth", action="store_true",
                     help="also open the Arducam ToF and fuse its zone verdicts")
+    ap.add_argument("--lcd", action="store_true",
+                    help="mirror annotated frames to the SPI LCD framebuffer")
     args = ap.parse_args()
 
     try:
@@ -532,6 +602,10 @@ def main():
         except Exception as exc:
             print("WARNING: depth unavailable (%s), continuing colour only" % exc)
 
+    lcd = LCDWriter() if args.lcd else None
+    if lcd:
+        print("LCD  : %s %dx%d %dbpp" % (lcd.fb, lcd.w, lcd.h, lcd.bpp))
+
     vision = VisionThread(source, depth_provider=depth_provider)
     ui = UIThread(vision)
     vision.start()
@@ -545,7 +619,10 @@ def main():
         os.makedirs(run_dir, exist_ok=True)
         print("Headless: annotated frames go to %s" % run_dir)
     else:
-        cv2.namedWindow("NAVI", cv2.WINDOW_NORMAL)
+        # Fullscreen so it fills the 3.5 inch LCD, which X11 drives.
+        cv2.namedWindow("NAVI", cv2.WND_PROP_FULLSCREEN)
+        cv2.setWindowProperty("NAVI", cv2.WND_PROP_FULLSCREEN,
+                              cv2.WINDOW_FULLSCREEN)
 
     print("Running. Press q in the window, or Ctrl C here, to stop.\n")
     started = time.perf_counter()
@@ -560,12 +637,16 @@ def main():
             if args.headless:
                 # About one image per second. Enough to review and will not
                 # fill the SD card on a long run.
+                if lcd:
+                    lcd.write(shown)
                 if time.perf_counter() - started >= saved:
                     cv2.imwrite(os.path.join(run_dir, "frame_%04d.jpg" % saved),
                                 shown)
                     saved += 1
             else:
                 cv2.imshow("NAVI", shown)
+                if lcd:
+                    lcd.write(shown)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
             print("\r vision %.1f fps | ui %.1f fps | frames %d | dropped %d   "
@@ -581,6 +662,8 @@ def main():
         source.release()
         if depth_reader:
             depth_reader.stop()
+        if lcd:
+            lcd.close()
         if not args.headless:
             cv2.destroyAllWindows()
         _summary(vision, ui)

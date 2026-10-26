@@ -28,6 +28,10 @@ import sys
 import threading
 import time
 
+# The UI window and --lcd draw on the Pi's own screen even when started over
+# SSH. X11 owns the display, so point at it unless the caller already did.
+os.environ.setdefault("DISPLAY", ":0")
+
 import numpy as np
 
 import navi_config as cfg
@@ -585,7 +589,7 @@ class DebugLog:
         self.fh.close()
 
 
-def run_loop(sys_, kb, debug_log=None):
+def run_loop(sys_, kb, debug_log=None, lcd=None):
     """Run vision results through the FSM and hand the packet to Thread 3.
 
     This loop never touches the camera, draws, or writes serial. Those have
@@ -633,6 +637,11 @@ def run_loop(sys_, kb, debug_log=None):
                    sys_.vision.rate.fps(), sys_.uart.rate.fps(),
                    "n/a" if temp is None else "%4.1fC" % temp))
             sys.stdout.flush()
+            if lcd and last_item is not None:
+                from navi_vision import annotate
+                shown = annotate(last_item["frame"], last_item["det"],
+                                 "[%s] %s" % (sys_.fsm.state, reason[:30]))
+                lcd.write(shown)
 
         time.sleep(0.002)
 
@@ -691,6 +700,8 @@ def main():
                     help="force the scripted sequence even on a terminal")
     ap.add_argument("--log", action="store_true",
                     help="write one CSV row per frame to output/debug_<time>.csv")
+    ap.add_argument("--lcd", action="store_true",
+                    help="mirror annotated frames to the SPI LCD framebuffer")
     args = ap.parse_args()
 
     try:
@@ -706,17 +717,25 @@ def main():
             % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
         print("  log    : %s" % debug_log.path)
 
+    lcd = None
+    if args.lcd:
+        from navi_vision import LCDWriter
+        lcd = LCDWriter()
+        print("  LCD    : %s %dx%d" % (lcd.fb, lcd.w, lcd.h))
+
     kb = Keyboard()
     sys_.start()
     try:
         if kb.enabled and not args.scripted:
-            run_loop(sys_, kb, debug_log)
+            run_loop(sys_, kb, debug_log, lcd=lcd)
         else:
             run_scripted(sys_)
     except KeyboardInterrupt:
         pass
     finally:
         kb.restore()
+        if lcd:
+            lcd.close()
         if debug_log is not None:
             debug_log.close()
             print("\nDebug log written to %s" % debug_log.path)

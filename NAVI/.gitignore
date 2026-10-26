@@ -19,3 +19,10 @@ firmware_tests/*/sdkconfig.old
 
 # Merged image for flashing from the Pi, rebuilt from source
 *.bin
+
+# Wireless bench build (firmware_wireless/)
+firmware_wireless/build/
+firmware_wireless/sdkconfig
+firmware_wireless/sdkconfig.old
+firmware_wireless/tools/.venv/
+firmware_wireless/main/wifi_credentials.h

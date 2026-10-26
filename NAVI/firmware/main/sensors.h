@@ -29,11 +29,11 @@ struct SensorState {
 // Closer than this and the ESP32 stops forward motion itself.
 // This is the bumper from report 3.7.6, meant to work when the Pi is slow, the
 // webcam is blocked or the ToF is wrong.
-constexpr int32_t BUMPER_STOP_MM = 300;
+constexpr int32_t BUMPER_STOP_MM = 900;
 
 // Release only once it reads past this for BUMPER_CLEAR_MS straight.
 // The gap above BUMPER_STOP_MM stops it chattering at the limit.
-constexpr int32_t BUMPER_RELEASE_MM = 400;
+constexpr int32_t BUMPER_RELEASE_MM = 1100;
 constexpr int64_t BUMPER_CLEAR_MS = 500;
 
 // Past this roll or pitch the chair should not drive. Reported to the Pi since

@@ -42,9 +42,13 @@ UPPER_GREEN = np.array([90, 255, 255])
 # red and a sat floor of 150 removed every false red and kept every real one.
 # Value floor stays 70 so the dim red regression still passes. Report Table
 # 6.11.1 needs updating.
-LOWER_RED_1 = np.array([0, 150, 70])
-UPPER_RED_1 = np.array([6, 255, 255])
-LOWER_RED_2 = np.array([172, 150, 70])
+#
+# Widened again 2026-10-22 on the live webcam: hue 0 to 7 and 160 to 179, sat
+# floor 140. Skin measured sat 80 to 105, so 140 still rejects it, and a floor
+# of 210 missed red targets at a distance.
+LOWER_RED_1 = np.array([0, 140, 70])
+UPPER_RED_1 = np.array([7, 255, 255])
+LOWER_RED_2 = np.array([160, 140, 70])
 UPPER_RED_2 = np.array([179, 255, 255])
 
 
@@ -82,9 +86,10 @@ DEPTH_MIN_MM = 200
 DEPTH_MAX_MM = 4000
 
 # Zone verdicts. Under BLOCKED_MM the path is refused. Between that and
-# CAUTION_MM the chair may go but it is flagged.
-ZONE_BLOCKED_MM = 600
-ZONE_CAUTION_MM = 1200
+# CAUTION_MM the chair may go but it is flagged. Raised 2026-10-22 on the
+# replacement ToF: blocked under 1 m (39 in), caution from 1 to 2 m.
+ZONE_BLOCKED_MM = 1000
+ZONE_CAUTION_MM = 2000
 
 # A zone needs this fraction of valid pixels to be trusted. Below it the zone
 # is UNKNOWN, which counts as blocked. Same fail safe idea as no target meaning

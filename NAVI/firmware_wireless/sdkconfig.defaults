@@ -1,0 +1,42 @@
+# NAVI firmware defaults.
+#
+# Project decisions, not personal preferences, so every build starts the same.
+
+CONFIG_IDF_TARGET="esp32"
+
+# Console and logs on UART0, the same UART as the Pi link (CP2102 on the PCB,
+# the USB bridge on a dev kit). The Pi only displays log lines and the packet
+# parser ignores anything outside <...>, so sharing is harmless.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# Task watchdog (report 6.16). main.cpp tightens it to 500 ms at runtime to
+# match Table 2.4.1 and the loss of signal spec, so both layers agree.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=1
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# GPIO interrupt code in IRAM so the e stop still fires while the flash cache
+# is busy. Part of holding the 500 ms budget.
+CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
+
+# Smaller binary, speed is fine for us.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# Temporary wireless build (main/wireless.cpp): WiFi to the hotspot plus BLE.
+# NimBLE is the smaller BLE stack, and BLE only leaves room for WiFi.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# NimBLE logs every notify at info level. Keep it to warnings.
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# Two OTA app slots so firmware can be updated over WiFi (partitions.csv).
+# WiFi plus BLE is about 1 MB, so each slot is 1.875 MB, which needs the
+# module's full 4 MB. The boot log confirmed the chip is bigger than 2 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
