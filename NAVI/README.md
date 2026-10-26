@@ -23,12 +23,14 @@ Packets from the Pi are `<LEFT_PWM,RIGHT_PWM,SAFETY_FLAG>`, PWM from -255 to 255
 | `navi_depth.py` | ToF depth, split into left/center/right zones |
 | `navi_control.py` | state machine (MANUAL/AUTO/ESTOP) and the UART link |
 | `selftest.py` | hardware check, run before a live test |
+| `esp_wireless.py` | bench testing only: `navi_control.py --link wifi/ble/both` sends packets without the UART |
 | `tests/` | offline unit tests, no hardware needed |
 | `tests-interactive/` | guided hardware tests: webcam, ToF, ultrasonic, ESP link, full system (`test_final.py`) |
 | `tools/esp_link_test.py` | Pi to ESP32 link test (12 checks) |
 | `tools/bumper_test.py` | watch the ultrasonic bumper trip and release |
 | `tools/tof_probe.py`, `tof_capture.py` | ToF readout and guided capture |
 | `tools/color_capture.py`, `hsv_probe.py` | colour capture and calibration |
+| `tools/navi_console.py` | readable live ESP console over the UART, WiFi or Bluetooth: fixed status panel, event log, command line |
 | `tools/cp_diag.py` | CP2102 USB health test, 100 tries per request type (`sudo`, needs `python3-usb`) |
 | `tools/pi-wifi-rescue.ps1` | add a wifi network to the Pi from its SD card (Windows) |
 | `firmware/` | ESP32 firmware for the final PCB (ESP-IDF v5.3 or later) |
@@ -94,15 +96,23 @@ CP2102's auto reset. If it does not connect, hold BOOT, tap RESET, release BOOT.
 
 `firmware/` plus the following, for bench work without a cable:
 
-- **WiFi:** joins the iPhone hotspot, then runs a TCP server on port 3333. Use `nc <ip> 3333`.
-- **Bluetooth:** BLE Nordic UART Service, advertised as `NAVI-ESP32`. Connect with
-  `tools/navi_ble.py` or a phone app such as Bluefruit Connect.
-- Both links take the same `<L,R,F>` packets as the UART, with the same watchdog and safety gates.
-  They mirror every log line back, and accept the text command `i2cscan`.
-- **WiFi updates:** `python3 tools/navi_ota.py build/navi_firmware.bin --ip <ip>` sends an
-  update to port 3334, with no cable or buttons.
-- It uses a 4 MB flash layout with two update slots (`partitions.csv`). Its first flash has
-  to be by cable.
+- **WiFi:** joins the hotspot, then serves the log and takes packets on TCP port 3333.
+- **Bluetooth:** advertised as `NAVI-ESP32`, with a Nordic UART service (log and packets) and a
+  firmware update service.
+- Both links take the same `<L,R,F>` packets as the UART, with the same watchdog and safety gates,
+  and mirror every log line back. Each takes one client at a time.
+- **Text commands** on either link: `i2cscan` (I2C bus check) and `ussdiag` (ultrasonic header
+  check: idle level of each pin, and whether echo moves after a trigger).
+- **Firmware updates without a cable** (from `firmware_wireless/tools/`):
+  `python3 navi_ota.py <app.bin> --ip <esp-ip>` over WiFi (~11 s), or
+  `.venv/bin/python navi_ota.py <app.bin> --ble` over Bluetooth (~90 s). A failed or cut-off
+  update leaves the running firmware untouched.
+- It uses a 4 MB flash layout with two update slots (`partitions.csv`). The first flash of this
+  layout has to be by cable.
+- WiFi credentials go in `main/wifi_credentials.h` (gitignored; copy the `.example.h`).
+
+Running the Pi without the UART, for testing: `python3 navi_control.py --link wifi` (or `ble`,
+or `both`). Watch with `tools/navi_console.py` on the other link, since each takes one client.
 
 ## Test status (2026-10-26)
 
@@ -114,24 +124,25 @@ Status of each part on the final PCB system.
 | Unit tests (`tests/`) | ✅ | 129/129 on the Pi |
 | Firmware logic (`firmware/test/`) | ✅ | 487 checks |
 | `selftest.py --quick` | ✅ | 11/11 |
-| Webcam + red/green detection | ✅ | EMEET 1280x720 at 30 fps, red tuned on the live camera |
-| ToF depth zones | ✅ | Blocked under 1 m, caution 1 to 2 m |
+| Webcam + red/green detection | ✅ | EMEET on `/dev/video0` |
+| ToF depth zones | ✅ | ~33 fps, 99% valid pixels; blocked under 1 m, caution 1 to 2 m |
 | LCD (fullscreen window) | ✅ | 3.5" ILI9486 on X11, `DISPLAY=:0`, rotation 270 |
 | LCD `--lcd` (raw `/dev/fb0`) | ⬜ | X11 draws over fb0 while the desktop runs |
-| Full system (`tests-interactive/test_final.py`) | ⬜ on PCBs | Auto and manual modes, all sensors and LCD passed before the PCBs; rerun on the boards |
-| Pi to ESP link (Vision PCB to MCU PCB) | 🟡 | Packets and logs flow; the Vision CP2102 has USB errors and is being replaced |
-| Flashing with auto-reset (DTR/RTS) | ❌ | Failed on the Vision CP2102; retest with the new chip. BOOT + EN works |
-| ESP firmware boot on the MCU PCB | ✅ | E-stop armed on IO25, relay on IO14, UART0 log |
-| Drive packets and relay on the MCU PCB | ⬜ | |
+| Full system, `navi_control.py` to the MCU PCB | ✅ | 101,317 frames (9.1 ms mean), 4,323 packets, 0 link errors, AUTO mode |
+| `tests-interactive/test_final.py` on PCBs | ⬜ | |
+| Pi to ESP over the Vision PCB (CP2102) | ❌ | The CP2102 on the Vision PCB does not power up (VDD 0 V); with the hardware team |
+| Pi to ESP over the Pi's UART pins (`/dev/ttyAMA0`) | ✅ | Both directions; Pi pin 8 → P3 pin 5, pin 10 ← P3 pin 4, pin 6 GND |
+| Flashing by cable (Pi UART, BOOT + EN) | ✅ | |
+| Flashing with auto-reset (DTR/RTS) | ⬜ | Needs a working Vision PCB |
+| Firmware update over WiFi / Bluetooth | ✅ / ✅ | 964 KB in ~11 s / ~90 s, reboots into the new image |
+| ESP firmware on the MCU PCB | ✅ | E-stop armed on IO25, relay on IO14; arms on packets, `SIGNAL_LOST` 0.5 s after they stop |
 | E-stop button, buzzer, LED (aux board) | ⬜ | Aux board not connected yet |
-| Ultrasonic (U1, IO26/27) | ❌ | Not detected on the PCB. RCWL-1655 works at 3.3 V; check supply and cable |
+| Ultrasonic (U1, IO26/27) | ❌ | `ussdiag`: both pins float, so the sensor's Echo does not reach the ESP. Echo connection open; Trig and 5 V are fine |
 | Bumper at 900 / 1100 mm | 🟡 | Trip/release logic tested; these distances not yet checked on hardware |
-| ICM-20948 IMU | ❌ | No I2C answer (bus is healthy); suspect nCS / VDDIO. Tilt is ignored without it |
+| ICM-20948 IMU | ❌ | No answer at 0x68/0x69. A device now answers at 0x10 (unknown). Tilt is ignored without it |
 | Motor PWM (IO32/33) | ⬜ | Placeholder pins, not routed on the PCB |
-| Wireless: WiFi join and log mirror | ✅ | On the MCU PCB |
-| Wireless: Bluetooth connect | 🟡 | Connects; a log loop is fixed in source, not flashed yet |
-| Wireless: WiFi updates (`navi_ota.py`) | ⬜ | Built, needs one cable flash first |
-| `i2cscan` | ✅ boot / ⬜ command | |
-| `tools/cp_diag.py` | ✅ | |
-| `tools/navi_ble.py` | ✅ | Scans and connects |
+| Wireless links: WiFi / Bluetooth | ✅ / ✅ | Log mirror, packets and commands on both |
+| `navi_control.py --link ble` / `wifi` / `both` | ✅ / ⬜ / ⬜ | BLE: 60/60 packets, arms and stops correctly |
+| `tools/navi_console.py` | ✅ | |
+| `tools/cp_diag.py`, `tools/navi_ble.py` | ✅ | |
 | `tools/bumper_test.py` | ⬜ | |
