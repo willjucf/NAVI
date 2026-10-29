@@ -6,7 +6,7 @@ import sys, os, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import numpy as np
 import navi_config as cfg
-from navi_depth import ArducamSource
+from navi_depth import ArducamSource, zone_map, format_row, BLOCKED, CAUTION, CLEAR, UNKNOWN
 
 def mm_to_in(mm):
     return mm / 25.4
@@ -99,73 +99,50 @@ print(f"  Clear:   >{cfg.ZONE_CAUTION_MM} mm ({mm_to_in(cfg.ZONE_CAUTION_MM):.0f
 results = {}
 
 def read_zones(src, n=10):
-    """Read n frames, return avg % of pixels in each zone."""
-    blocked_pcts = []
-    caution_pcts = []
-    clear_pcts = []
+    """Read n frames through navi_depth.zone_map, the same rule the chair runs.
+
+    Returns the center zone verdict seen most often, or None with no frames.
+    """
+    verdicts = []
     for _ in range(n):
         frame = src.read()
         if frame is None:
             continue
-        valid = frame[(frame >= cfg.DEPTH_MIN_MM) & (frame <= cfg.DEPTH_MAX_MM)]
-        if valid.size == 0:
-            continue
-        total = valid.size
-        blocked_pcts.append(100 * (valid < cfg.ZONE_BLOCKED_MM).sum() / total)
-        caution_pcts.append(100 * ((valid >= cfg.ZONE_BLOCKED_MM) & (valid < cfg.ZONE_CAUTION_MM)).sum() / total)
-        clear_pcts.append(100 * (valid >= cfg.ZONE_CAUTION_MM).sum() / total)
+        summary = zone_map(frame)
+        verdicts.append(summary["zones"]["center"]["verdict"])
+        print("  " + format_row(summary))
         time.sleep(0.1)
-    if not blocked_pcts:
-        return None, None, None
-    return np.mean(blocked_pcts), np.mean(caution_pcts), np.mean(clear_pcts)
+    if not verdicts:
+        return None
+    return max(set(verdicts), key=verdicts.count)
 
-# Test 1: Object close - should be BLOCKED
-input("TEST 1: Hold a large object CLOSE, within 1m (39in). Press Enter...")
-b, c, cl = read_zones(src)
-if b is not None:
-    ok = b > 15
-    results["close_blocked"] = ok
-    print(f"  Blocked: {b:.0f}%  Caution: {c:.0f}%  Clear: {cl:.0f}%")
-    print(f"  {'PASS' if ok else 'FAIL'}: expected >15% blocked pixels\n")
-else:
-    results["close_blocked"] = False
-    print("  FAIL: no readings\n")
 
-# Test 2: Object mid-range - should be CAUTION
-input("TEST 2: Move the object to 1-2m (39-79in) away. Press Enter...")
-b, c, cl = read_zones(src)
-if b is not None:
-    ok = c > 10
-    results["mid_caution"] = ok
-    print(f"  Blocked: {b:.0f}%  Caution: {c:.0f}%  Clear: {cl:.0f}%")
-    print(f"  {'PASS' if ok else 'FAIL'}: expected >10% caution pixels\n")
-else:
-    results["mid_caution"] = False
-    print("  FAIL: no readings\n")
+def run_case(key, prompt, expected):
+    input(prompt)
+    verdict = read_zones(src)
+    if verdict is None:
+        results[key] = False
+        print("  FAIL: no readings\n")
+        return
+    ok = verdict in expected
+    results[key] = ok
+    print("  Center: %s" % verdict)
+    print("  %s: expected %s\n" % ("PASS" if ok else "FAIL", " or ".join(expected)))
 
-# Test 3: Nothing close - should be CLEAR
-input("TEST 3: Clear the view - nothing within 2m (79in). Press Enter...")
-b, c, cl = read_zones(src)
-if b is not None:
-    ok = cl > 50 and b < 20
-    results["clear"] = ok
-    print(f"  Blocked: {b:.0f}%  Caution: {c:.0f}%  Clear: {cl:.0f}%")
-    print(f"  {'PASS' if ok else 'FAIL'}: expected >50% clear, <10% blocked\n")
-else:
-    results["clear"] = False
-    print("  FAIL: no readings\n")
 
-# Test 4: Verify change - cover the sensor
-input("TEST 4: Cover the sensor with your hand right up against it. Press Enter...")
-b, c, cl = read_zones(src)
-if b is not None:
-    ok = b > 30
-    results["hand_cover"] = ok
-    print(f"  Blocked: {b:.0f}%  Caution: {c:.0f}%  Clear: {cl:.0f}%")
-    print(f"  {'PASS' if ok else 'FAIL'}: expected >30% blocked\n")
-else:
-    results["hand_cover"] = False
-    print("  FAIL: no readings\n")
+run_case("close_blocked",
+         "TEST 1: Hold a large object CLOSE, within 1m (39in), in front of the center. Press Enter...",
+         (BLOCKED,))
+run_case("mid_caution",
+         "TEST 2: Move the object to 1-2m (39-79in) away. Press Enter...",
+         (CAUTION,))
+run_case("clear",
+         "TEST 3: Clear the view - nothing within 2m (79in). Press Enter...",
+         (CLEAR,))
+# A hand on the lens may read BLOCKED or, with nothing valid, UNKNOWN. Both stop the chair.
+run_case("hand_cover",
+         "TEST 4: Cover the sensor with your hand right up against it. Press Enter...",
+         (BLOCKED, UNKNOWN))
 
 src.close()
 passed = sum(results.values())

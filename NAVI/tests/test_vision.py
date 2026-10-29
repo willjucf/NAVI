@@ -193,8 +193,9 @@ class TestSteering(unittest.TestCase):
         self.assertAlmostEqual(left["right"], right["left"], delta=2)
 
     def test_pwm_never_leaves_the_documented_range(self):
-        # Report 6.13 fixes the range at plus or minus 255. The turn gain of
-        # 1.2 can exceed that before clipping, so this is a real boundary.
+        # Report 6.13 fixes the range at plus or minus 255. Base speed plus
+        # the turn term can exceed that before clipping, so this is a real
+        # boundary.
         for frac in (0.0, 0.05, 0.5, 0.95, 1.0):
             d = detect(green_frame(cx_frac=frac))
             self.assertGreaterEqual(d["left"], -cfg.PWM_MAX)
