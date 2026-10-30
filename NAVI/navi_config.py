@@ -56,7 +56,12 @@ UPPER_RED_2 = np.array([179, 255, 255])
 
 PWM_MAX = 255              # packet PWM range is minus 255 to plus 255
 BASE_SPEED = 150           # forward speed with a centered green target
-TURN_GAIN = 1.2            # how hard steering error turns the chair
+# How hard steering error turns the chair. 0.5 is a starting value for the
+# first drives: with BASE_SPEED 150 both wheels keep moving forward for any
+# target in frame, where 1.2 pivoted the chair once the target was halfway to
+# the edge. Tune on the chair: raise it if the target drifts out of view,
+# lower it if the chair swings back and forth across the target.
+TURN_GAIN = 0.5
 
 
 # Camera (report 2.4 Table 2.4.1, 3.7.2, 3.7.5)
@@ -79,11 +84,20 @@ DEPTH_VIDEO_INDEX = 2
 DEPTH_WIDTH = 240          # Arducam ToF resolution from 3.7.4
 DEPTH_HEIGHT = 180
 
-# Usable range (3.7.4 says about 2 to 4 m). Readings outside it are invalid.
-# Shiny surfaces and sunlight give confident looking garbage, which is worse
-# than no reading.
+# Zone distances drop zero (no return) and anything past DEPTH_MAX_MM, where
+# shiny surfaces and sunlight give confident looking garbage. Readings under
+# DEPTH_MIN_MM are kept: a very close object is the one that most needs to stop
+# the chair (see zone_stats in navi_depth.py). DEPTH_MIN_MM is only used by
+# diagnostics, to count how many pixels are that close.
 DEPTH_MIN_MM = 200
 DEPTH_MAX_MM = 4000
+
+# Pixels the sensor is unsure of are zeroed before the zones see them. Below
+# this confidence the Arducam fills in fixed values (500, 1000, 2000 mm and
+# others) that look like real readings: a wall at 1.1 and 1.5 m both read
+# exactly 1000 mm. 30 is the cutoff Arducam's own examples use; it removed all
+# but a few hundred of the ~10,000 filler pixels in a frame.
+DEPTH_MIN_CONFIDENCE = 30
 
 # Zone verdicts. Under BLOCKED_MM the path is refused. Between that and
 # CAUTION_MM the chair may go but it is flagged. Raised 2026-10-22 on the

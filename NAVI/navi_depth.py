@@ -195,7 +195,10 @@ class ArducamSource:
         if frame is None:
             return None
         try:
-            depth = np.asarray(frame.depth_data, dtype=np.float32)
+            depth = np.array(frame.depth_data, dtype=np.float32)
+            confidence = np.asarray(frame.confidence_data, dtype=np.float32)
+            # low confidence pixels count as no reading (DEPTH_MIN_CONFIDENCE)
+            depth[confidence < cfg.DEPTH_MIN_CONFIDENCE] = 0
         finally:
             self.cam.releaseFrame(frame)
         return depth
@@ -445,9 +448,8 @@ def main():
 
     print("Depth source: %s" % source.describe())
     print("Zone thresholds: blocked under %dmm, caution under %dmm, "
-          "valid window %d to %dmm"
-          % (cfg.ZONE_BLOCKED_MM, cfg.ZONE_CAUTION_MM,
-             cfg.DEPTH_MIN_MM, cfg.DEPTH_MAX_MM))
+          "readings past %dmm ignored"
+          % (cfg.ZONE_BLOCKED_MM, cfg.ZONE_CAUTION_MM, cfg.DEPTH_MAX_MM))
     print("Move an object toward and away from the camera. Ctrl C to stop.\n")
 
     started = time.perf_counter()
