@@ -7,9 +7,11 @@
 
 #include "wireless.h"
 #include "sensors.h"
+#include "safety.h"
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_event.h"
@@ -104,12 +106,27 @@ static void i2cscan_task(void* arg) {
     vTaskDelete(nullptr);
 }
 
+static void beep_task(void* arg) {
+    (void)arg;
+    // Two pitches, so a dead speaker and a muffled one sound different.
+    speaker_tone(1000, 500);
+    speaker_tone(2000, 500);
+    ESP_LOGI(TAG, "beep done");
+    vTaskDelete(nullptr);
+}
+
 static void run_command(const char* line) {
-    if (strcmp(line, "i2cscan") == 0) {
+    if (strcmp(line, "ussdiag") == 0) {
+        ESP_LOGI(TAG, "running ussdiag");
+        sensors_request_uss_diag();
+    } else if (strcmp(line, "i2cscan") == 0) {
         ESP_LOGI(TAG, "running i2cscan");
         xTaskCreate(i2cscan_task, "i2cscan", 4096, nullptr, 3, nullptr);
+    } else if (strcmp(line, "beep") == 0) {
+        ESP_LOGI(TAG, "beep: 1 kHz then 2 kHz on the speaker");
+        xTaskCreate(beep_task, "beep", 3072, nullptr, 3, nullptr);
     } else if (line[0] != 0) {
-        ESP_LOGW(TAG, "unknown command \"%s\" (try i2cscan)", line);
+        ESP_LOGW(TAG, "unknown command \"%s\" (try i2cscan, ussdiag or beep)", line);
     }
 }
 
@@ -131,6 +148,42 @@ void TextCommand::feed(char c) {
     }
 }
 
+// Firmware updates, shared by WiFi and BLE
+//
+// One update at a time. The image goes to the spare OTA slot and only becomes
+// the boot image after esp_ota_end has checked it, so a failed or cut-off
+// update leaves the running firmware untouched. The reboot at the end drops
+// the relay like any reset, so the chair is left stopped.
+
+static portMUX_TYPE s_ota_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool s_ota_busy = false;
+
+static bool ota_lock() {
+    bool got = false;
+    taskENTER_CRITICAL(&s_ota_mux);
+    if (!s_ota_busy) {
+        s_ota_busy = true;
+        got = true;
+    }
+    taskEXIT_CRITICAL(&s_ota_mux);
+    return got;
+}
+
+static void ota_unlock() {
+    s_ota_busy = false;
+}
+
+static void restart_task(void* arg) {
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+// Reboot a second from now, so the reply to the client gets out first.
+static void schedule_restart() {
+    xTaskCreate(restart_task, "restart", 2048, nullptr, 1, nullptr);
+}
+
 // BLE, Nordic UART Service
 
 // 6E400001-B5A3-F393-E0A9-E50E24DCCA9E and friends, little endian.
@@ -148,10 +201,16 @@ static uint16_t s_tx_handle = 0;
 static uint8_t s_own_addr_type = 0;
 static PacketParser s_ble_parser;       // NimBLE host task only
 static TextCommand s_ble_text;
+static TextCommand s_uart_text;      // UART receive task only
+
+void wireless_uart_text(char c) {
+    s_uart_text.feed(c);
+}
 
 static void ble_send(const char* data, size_t len) {
     const uint16_t conn = s_ble_conn;
-    if (!s_ble_subscribed || conn == BLE_HS_CONN_HANDLE_NONE) {
+    // During an update the link is busy carrying the image.
+    if (!s_ble_subscribed || conn == BLE_HS_CONN_HANDLE_NONE || s_ota_busy) {
         return;
     }
     size_t chunk = ble_att_mtu(conn);
@@ -191,6 +250,154 @@ static int nus_access(uint16_t conn, uint16_t attr, ble_gatt_access_ctxt* ctxt,
     return 0;
 }
 
+// BLE firmware update service
+//
+// Write "BEGIN <bytes>" to the control characteristic, the app .bin in chunks
+// to the data characteristic, then "END" (or "ABORT"). Every write needs a
+// response, so the client is paced and nothing is dropped. A failed write
+// returns one of the OTA_ERR codes below. Disconnecting mid update aborts it.
+
+// d0f20001-8a4e-4b5a-9c1e-4e4156494f54 and friends, little endian.
+static const ble_uuid128_t OTA_SVC_UUID = BLE_UUID128_INIT(
+    0x54, 0x4f, 0x49, 0x56, 0x41, 0x4e, 0x1e, 0x9c,
+    0x5a, 0x4b, 0x4e, 0x8a, 0x01, 0x00, 0xf2, 0xd0);
+static const ble_uuid128_t OTA_CTRL_UUID = BLE_UUID128_INIT(
+    0x54, 0x4f, 0x49, 0x56, 0x41, 0x4e, 0x1e, 0x9c,
+    0x5a, 0x4b, 0x4e, 0x8a, 0x02, 0x00, 0xf2, 0xd0);
+static const ble_uuid128_t OTA_DATA_UUID = BLE_UUID128_INIT(
+    0x54, 0x4f, 0x49, 0x56, 0x41, 0x4e, 0x1e, 0x9c,
+    0x5a, 0x4b, 0x4e, 0x8a, 0x03, 0x00, 0xf2, 0xd0);
+
+// ATT application error codes, so the client can say why a write failed.
+static constexpr int OTA_ERR_BUSY = 0x80;    // another update is running
+static constexpr int OTA_ERR_SIZE = 0x81;    // size is 0 or too big for the slot
+static constexpr int OTA_ERR_BEGIN = 0x82;   // esp_ota_begin failed
+static constexpr int OTA_ERR_WRITE = 0x83;   // flash write failed or too much data
+static constexpr int OTA_ERR_IMAGE = 0x84;   // the image did not check out
+static constexpr int OTA_ERR_STATE = 0x85;   // data or END with no update running
+
+static uint16_t s_ota_ctrl_handle = 0;
+static uint16_t s_ota_data_handle = 0;
+
+// NimBLE host task only.
+static bool s_ble_ota_active = false;
+static esp_ota_handle_t s_ble_ota = 0;
+static const esp_partition_t* s_ble_ota_part = nullptr;
+static uint32_t s_ble_ota_size = 0;
+static uint32_t s_ble_ota_got = 0;
+static int s_ble_ota_pct = 0;
+
+static void ble_ota_abort(const char* why) {
+    if (!s_ble_ota_active) {
+        return;
+    }
+    esp_ota_abort(s_ble_ota);
+    s_ble_ota_active = false;
+    ota_unlock();
+    ESP_LOGE(TAG, "ota (ble): aborted, %s", why);
+}
+
+static int ble_ota_ctrl(const char* cmd) {
+    if (strncmp(cmd, "BEGIN ", 6) == 0) {
+        ble_ota_abort("restarted by client");
+        if (!ota_lock()) {
+            return OTA_ERR_BUSY;
+        }
+        const unsigned long size = strtoul(cmd + 6, nullptr, 10);
+        const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
+        if (part == nullptr || size == 0 || size > part->size) {
+            ota_unlock();
+            return OTA_ERR_SIZE;
+        }
+        if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &s_ble_ota) != ESP_OK) {
+            ota_unlock();
+            return OTA_ERR_BEGIN;
+        }
+        s_ble_ota_part = part;
+        s_ble_ota_size = size;
+        s_ble_ota_got = 0;
+        s_ble_ota_pct = 0;
+        s_ble_ota_active = true;
+        ESP_LOGW(TAG, "ota (ble): receiving %lu bytes into %s", size, part->label);
+        return 0;
+    }
+    if (strcmp(cmd, "END") == 0) {
+        if (!s_ble_ota_active || s_ble_ota_got != s_ble_ota_size) {
+            ble_ota_abort("END before all the data");
+            return OTA_ERR_STATE;
+        }
+        s_ble_ota_active = false;
+        const esp_err_t err = esp_ota_end(s_ble_ota);      // checks the image
+        if (err != ESP_OK || esp_ota_set_boot_partition(s_ble_ota_part) != ESP_OK) {
+            ota_unlock();
+            ESP_LOGE(TAG, "ota (ble): image rejected (%s)", esp_err_to_name(err));
+            return OTA_ERR_IMAGE;
+        }
+        ESP_LOGW(TAG, "ota (ble): done, rebooting into %s", s_ble_ota_part->label);
+        schedule_restart();
+        return 0;
+    }
+    if (strcmp(cmd, "ABORT") == 0) {
+        ble_ota_abort("by client");
+        return 0;
+    }
+    return OTA_ERR_STATE;
+}
+
+static int ota_access(uint16_t conn, uint16_t attr, ble_gatt_access_ctxt* ctxt,
+                      void* arg) {
+    (void)conn;
+    (void)arg;
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    static uint8_t buf[520];             // one write at the 512 byte MTU
+    uint16_t len = 0;
+    if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf) - 1, &len) != 0) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+
+    if (attr == s_ota_ctrl_handle) {
+        while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+            --len;
+        }
+        buf[len] = 0;
+        return ble_ota_ctrl(reinterpret_cast<const char*>(buf));
+    }
+
+    if (!s_ble_ota_active) {
+        return OTA_ERR_STATE;
+    }
+    if (s_ble_ota_got + len > s_ble_ota_size ||
+        esp_ota_write(s_ble_ota, buf, len) != ESP_OK) {
+        ble_ota_abort("flash write failed");
+        return OTA_ERR_WRITE;
+    }
+    s_ble_ota_got += len;
+    const int pct = (int)((uint64_t)s_ble_ota_got * 100 / s_ble_ota_size);
+    if (pct / 10 != s_ble_ota_pct / 10) {
+        s_ble_ota_pct = pct;
+        ESP_LOGI(TAG, "ota (ble): %d%%", pct);
+    }
+    return 0;
+}
+
+static const ble_gatt_chr_def OTA_CHRS[] = {
+    {
+        .uuid = &OTA_CTRL_UUID.u,
+        .access_cb = ota_access,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &s_ota_ctrl_handle,
+    },
+    {
+        .uuid = &OTA_DATA_UUID.u,
+        .access_cb = ota_access,
+        .flags = BLE_GATT_CHR_F_WRITE,
+        .val_handle = &s_ota_data_handle,
+    },
+    {},
+};
+
 static const ble_gatt_chr_def NUS_CHRS[] = {
     {
         .uuid = &NUS_RX_UUID.u,
@@ -206,11 +413,16 @@ static const ble_gatt_chr_def NUS_CHRS[] = {
     {},
 };
 
-static const ble_gatt_svc_def NUS_SVCS[] = {
+static const ble_gatt_svc_def BLE_SVCS[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = &NUS_SVC_UUID.u,
         .characteristics = NUS_CHRS,
+    },
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &OTA_SVC_UUID.u,
+        .characteristics = OTA_CHRS,
     },
     {},
 };
@@ -259,6 +471,7 @@ static int gap_event(ble_gap_event* ev, void* arg) {
     case BLE_GAP_EVENT_DISCONNECT:
         s_ble_subscribed = false;
         s_ble_conn = BLE_HS_CONN_HANDLE_NONE;
+        ble_ota_abort("connection lost");
         ESP_LOGI(TAG, "ble client disconnected");
         ble_advertise();
         break;
@@ -280,7 +493,8 @@ static void ble_on_sync() {
     ble_hs_util_ensure_addr(0);
     ble_hs_id_infer_auto(0, &s_own_addr_type);
     ble_advertise();
-    ESP_LOGI(TAG, "ble advertising as %s (Nordic UART Service)", NAVI_BLE_NAME);
+    ESP_LOGI(TAG, "ble advertising as %s (UART and firmware update services)",
+             NAVI_BLE_NAME);
 }
 
 static void ble_host_task(void* arg) {
@@ -300,7 +514,7 @@ static void ble_start() {
     ble_hs_cfg.sync_cb = ble_on_sync;
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    if (ble_gatts_count_cfg(NUS_SVCS) != 0 || ble_gatts_add_svcs(NUS_SVCS) != 0) {
+    if (ble_gatts_count_cfg(BLE_SVCS) != 0 || ble_gatts_add_svcs(BLE_SVCS) != 0) {
         ESP_LOGE(TAG, "ble service setup failed");
         return;
     }
@@ -440,9 +654,8 @@ static void tcp_server_task(void* arg) {
 // Firmware update over WiFi
 //
 // Protocol: the client sends the image length as 4 bytes little endian, then
-// the raw app .bin. The ESP writes it to the spare OTA slot, checks it, and
-// replies "OK" and reboots, or "ERR <reason>" and keeps running the old one.
-// A reboot drops the relay like any reset, so the chair is left stopped.
+// the raw app .bin. The ESP replies "OK rebooting", or "ERR <reason>" and
+// keeps running the old firmware.
 
 static void ota_reply(int fd, const char* msg) {
     send(fd, msg, strlen(msg), 0);
@@ -450,18 +663,25 @@ static void ota_reply(int fd, const char* msg) {
 }
 
 static void ota_receive(int fd) {
+    if (!ota_lock()) {
+        ota_reply(fd, "ERR another update is running");
+        return;
+    }
     uint32_t size = 0;
     if (recv(fd, &size, sizeof(size), MSG_WAITALL) != (int)sizeof(size)) {
         ota_reply(fd, "ERR no length");
+        ota_unlock();
         return;
     }
     const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
     if (part == nullptr) {
         ota_reply(fd, "ERR no OTA partition");
+        ota_unlock();
         return;
     }
     if (size == 0 || size > part->size) {
         ota_reply(fd, "ERR image size");
+        ota_unlock();
         return;
     }
     ESP_LOGW(TAG, "ota: receiving %lu bytes into %s", (unsigned long)size, part->label);
@@ -469,6 +689,7 @@ static void ota_receive(int fd) {
     esp_ota_handle_t ota = 0;
     if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
         ota_reply(fd, "ERR ota begin");
+        ota_unlock();
         return;
     }
     static char buf[1024];
@@ -479,11 +700,13 @@ static void ota_receive(int fd) {
         if (n <= 0) {
             esp_ota_abort(ota);
             ESP_LOGE(TAG, "ota: connection lost at %lu bytes", (unsigned long)got);
+            ota_unlock();
             return;
         }
         if (esp_ota_write(ota, buf, n) != ESP_OK) {
             esp_ota_abort(ota);
             ota_reply(fd, "ERR flash write");
+            ota_unlock();
             return;
         }
         got += n;
@@ -497,16 +720,17 @@ static void ota_receive(int fd) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "ota: image rejected (%s)", esp_err_to_name(err));
         ota_reply(fd, "ERR image invalid");
+        ota_unlock();
         return;
     }
     if (esp_ota_set_boot_partition(part) != ESP_OK) {
         ota_reply(fd, "ERR set boot partition");
+        ota_unlock();
         return;
     }
     ESP_LOGW(TAG, "ota: done, rebooting into %s", part->label);
     ota_reply(fd, "OK rebooting");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    schedule_restart();
 }
 
 static void ota_server_task(void* arg) {
