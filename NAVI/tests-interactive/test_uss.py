@@ -23,9 +23,8 @@ PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def read_uss(seconds=4):
-    s = serial.Serial()
-    s.port = PORT; s.baudrate = BAUD; s.timeout = 0.2
-    s.dtr = False; s.rts = False; s.open()
+    from esp_serial import open_esp_serial
+    s = open_esp_serial(PORT, BAUD, timeout=0.2)
     s.reset_input_buffer()
     t = time.time(); buf = b""
     while time.time() - t < seconds:

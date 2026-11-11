@@ -13,10 +13,8 @@ PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def open_port():
-    s = serial.Serial()
-    s.port = PORT; s.baudrate = BAUD; s.timeout = 0.2
-    s.dtr = False; s.rts = False; s.open()
-    return s
+    from esp_serial import open_esp_serial
+    return open_esp_serial(PORT, BAUD, timeout=0.2)
 
 def send_sustained(s, packet, duration=2.0):
     """Send a packet at 20 Hz for duration seconds, return log text."""

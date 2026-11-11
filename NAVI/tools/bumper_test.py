@@ -36,19 +36,12 @@ def main():
     args = ap.parse_args()
 
     try:
-        import serial
+        import serial  # noqa: F401
     except ImportError:
         sys.exit("pyserial missing: sudo apt install python3-serial")
+    from esp_serial import open_esp_serial
 
-    link = serial.Serial()
-    link.port = args.port
-    link.baudrate = args.baud
-    link.timeout = 0.05
-    # DTR and RTS drive EN and IO0 through the Vision PCB. Left high they can
-    # hold the ESP32 in reset or the bootloader.
-    link.dtr = False
-    link.rts = False
-    link.open()
+    link = open_esp_serial(args.port, args.baud, timeout=0.05)
 
     print("sending %s on %s. Move a hand within 30 cm of a sensor. Ctrl C to stop"
           % (DRIVE_PACKET.decode(), args.port))

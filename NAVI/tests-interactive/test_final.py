@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import serial
 import navi_config as cfg
+from navi_depth import zone_map, CAUTION
 
 # --- Motion constants from wheelchairspeed.png ---
 CRUISE_PWM = 139          # ~1.2 m/s estimate (139/255)
@@ -35,10 +36,8 @@ PORT = cfg.SERIAL_PORT   # the CP2102, found by navi_config
 BAUD = 115200
 
 def open_esp():
-    s = serial.Serial()
-    s.port = PORT; s.baudrate = BAUD; s.timeout = 0.1
-    s.dtr = False; s.rts = False; s.open()
-    return s
+    from esp_serial import open_esp_serial
+    return open_esp_serial(PORT, BAUD, timeout=0.1)
 
 def read_esp_state(ser):
     """Read latest ESP status line, return dict."""
@@ -83,23 +82,25 @@ def detect(frame):
 # --- ToF ---
 
 def read_tof_zones(depth_src):
-    """Return (blocked%, caution%, clear%) or None."""
+    """Zone summary from navi_depth.zone_map, the same rule the chair runs.
+
+    None when no ToF is attached. A failed read counts as blocked, since a
+    blind sensor is not a clear path.
+    """
     if depth_src is None:
         return None
     try:
         frame = depth_src.read()
-        if frame is None:
-            return None
-        valid = frame[(frame >= cfg.DEPTH_MIN_MM) & (frame <= cfg.DEPTH_MAX_MM)]
-        if valid.size == 0:
-            return None
-        total = valid.size
-        b = 100 * (valid < cfg.ZONE_BLOCKED_MM).sum() / total
-        c = 100 * ((valid >= cfg.ZONE_BLOCKED_MM) & (valid < cfg.ZONE_CAUTION_MM)).sum() / total
-        cl = 100 * (valid >= cfg.ZONE_CAUTION_MM).sum() / total
-        return b, c, cl
     except Exception:
-        return None
+        frame = None
+    if frame is None:
+        return {"path_blocked": True, "reason": "NO DEPTH FRAME", "zones": None}
+    return zone_map(frame)
+
+
+def center_mm(tof):
+    z = tof["zones"]["center"] if tof and tof["zones"] else None
+    return "n/a" if z is None or z["distance_mm"] is None else "%dmm" % z["distance_mm"]
 
 # --- Keyboard (non-blocking) ---
 
@@ -260,8 +261,9 @@ def main():
 
             green, red, gc, rc = detect(frame)
             tof = read_tof_zones(depth_src)
-            tof_blocked = tof[0] > 15 if tof else False
-            tof_caution = tof[1] > 10 if tof else False
+            tof_blocked = tof["path_blocked"] if tof else False
+            tof_caution = bool(tof and tof["zones"]
+                               and tof["zones"]["center"]["verdict"] == CAUTION)
 
             # Read ESP — keep last known values if no new data
             esp = read_esp_state(ser) if ser else {}
@@ -304,11 +306,11 @@ def main():
                     target_left = 0; target_right = 0
                     status_color = (0, 0, 255)
                 elif tof_blocked:
-                    reason = "TOF BLOCKED (%.0f%%)" % tof[0]
+                    reason = "TOF BLOCKED (%s)" % tof["reason"]
                     target_left = 0; target_right = 0
                     status_color = (0, 0, 255)
                 elif tof_caution and green:
-                    reason = "CAUTION SLOW (%.0f%%)" % tof[1]
+                    reason = "CAUTION SLOW (%s)" % center_mm(tof)
                     speed = CAUTION_PWM
                     if gc is not None:
                         M = cv2.moments(gc)
@@ -392,7 +394,15 @@ def main():
             cv2.waitKey(1)
 
             # --- Console (live update, fixed position) ---
-            tof_str = "B:%.0f%% C:%.0f%% CL:%.0f%%" % tof if tof else "n/a"
+            if not tof:
+                tof_str = "n/a"
+            elif not tof["zones"]:
+                tof_str = tof["reason"]
+            else:
+                tof_str = " ".join(
+                    "%s:%s" % (n[0].upper(), "n/a" if z["distance_mm"] is None
+                               else "%dmm %s" % (z["distance_mm"], z["verdict"]))
+                    for n, z in ((n, tof["zones"][n]) for n in ("left", "center", "right")))
             grn = "YES" if green else "no"
             rd = "YES" if red else "no"
 

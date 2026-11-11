@@ -36,16 +36,9 @@ def open_port(port, baud):
         import serial
     except ImportError:
         sys.exit("pyserial missing: sudo apt install python3-serial")
-    link = serial.Serial()
-    link.port = port
-    link.baudrate = baud
-    link.timeout = 0.05
-    # DTR and RTS drive EN and IO0 through the Vision PCB. Left high they can
-    # hold the ESP32 in reset or the bootloader.
-    link.dtr = False
-    link.rts = False
+    from esp_serial import open_esp_serial
     try:
-        link.open()
+        link = open_esp_serial(port, baud, timeout=0.05)
     except Exception as exc:
         sys.exit("could not open %s: %s\n"
                  "is the cable in (ls /dev/ttyUSB* /dev/ttyACM*), is another "

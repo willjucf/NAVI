@@ -17,6 +17,7 @@ while things are healthy.
     python3 navi_control.py                      live camera plus real UART
     python3 navi_control.py --source images      no camera needed
     python3 navi_control.py --no-serial          print packets instead of sending
+    python3 navi_control.py --link wifi          bench: packets over WiFi (or ble, both)
 """
 
 import argparse
@@ -189,26 +190,17 @@ class NullPort:
 def open_serial(port=None, baud=None):
     """Open the real UART to the ESP32, or raise with a usable message."""
     try:
-        import serial
+        import serial  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "pyserial is not installed. Run: sudo apt install python3-serial"
         ) from exc
+    from esp_serial import open_esp_serial
     port = port or cfg.SERIAL_PORT
     baud = baud or cfg.SERIAL_BAUD
     try:
-        # DTR and RTS drive the auto reset on EN and IO0 through the Vision
-        # PCB. pyserial raises both on open, which can reset the ESP32 or put
-        # it in the bootloader. Hold them low before opening.
-        link = serial.Serial()
-        link.port = port
-        link.baudrate = baud
-        link.timeout = 0
-        link.write_timeout = 0.1
-        link.dtr = False
-        link.rts = False
-        link.open()
-        return link
+        # Reopens until the CP2102 reads clean, see esp_serial.py.
+        return open_esp_serial(port, baud, timeout=0, write_timeout=0.1)
     except Exception as exc:
         raise RuntimeError(
             "Could not open %s at %d baud (%s). Check the USB cable to the CP2102 "
@@ -449,9 +441,26 @@ class NaviSystem:
         else:
             print("  depth  : disabled by flag")
 
+        link_kind = getattr(self.args, "link", "uart")
         if self.args.no_serial:
             self.port = NullPort()
             print("  uart   : disabled, packets printed only")
+        elif link_kind != "uart":
+            # Bench testing only: packets over WiFi and/or Bluetooth instead
+            # of the UART (esp_wireless.py).
+            import esp_wireless
+            try:
+                self.port = esp_wireless.open_link(link_kind, self.args.esp_ip)
+                up = esp_wireless.wait_connected(self.port)
+                print("  link   : %s (%s)" % (self.port.describe(),
+                                              "connected" if up else "still connecting"))
+                if getattr(self.args, "esp_log", False):
+                    start_esp_log(self.port)
+                    print("  esp log: echoing the ESP32 status lines")
+            except RuntimeError as exc:
+                print("  link   : %s" % exc)
+                print("           falling back to print only")
+                self.port = NullPort()
         else:
             try:
                 self.port = open_serial(self.args.port, self.args.baud)
@@ -688,6 +697,12 @@ def main():
     ap.add_argument("--baud", type=int, default=None)
     ap.add_argument("--no-serial", action="store_true",
                     help="do not open a serial port, print packets instead")
+    ap.add_argument("--link", choices=("uart", "wifi", "ble", "both"), default="uart",
+                    help="bench testing: send packets over WiFi, Bluetooth or both "
+                         "instead of the UART (needs the firmware_wireless build)")
+    ap.add_argument("--esp-ip", default=None,
+                    help="ESP32 WiFi address for --link wifi/both (found "
+                         "automatically if left out)")
     ap.add_argument("--no-depth", action="store_true",
                     help="skip the Arducam ToF entirely")
     ap.add_argument("--sim-depth", action="store_true",
