@@ -112,6 +112,80 @@ void safety_init() {
              NAVI_ESTOP_PIN, NAVI_RELAY_PIN);
 }
 
+// Released means the pin read high on every pass for this long, so a bouncing
+// contact cannot flick the relay closed and open again.
+static constexpr int64_t ESTOP_RELEASE_US = 100000;   // 100 ms
+static int64_t s_high_since_us = -1;
+
+void estop_poll_release() {
+    if (!s_estop_latched) {
+        s_high_since_us = -1;
+        return;
+    }
+    const int64_t now = esp_timer_get_time();
+    if (gpio_get_level(NAVI_ESTOP_PIN) == 0 || now - s_last_edge_us < DEBOUNCE_US) {
+        s_high_since_us = -1;                 // still held or still bouncing
+        return;
+    }
+    if (s_high_since_us < 0) {
+        s_high_since_us = now;
+        return;
+    }
+    if (now - s_high_since_us < ESTOP_RELEASE_US) {
+        return;
+    }
+
+    s_estop_latched = false;
+    s_reason = HaltReason::NONE;
+    s_high_since_us = -1;
+    // A press between the level check and the clear above would be lost, so
+    // look once more. The ISR also sets the latch on that edge either way.
+    if (gpio_get_level(NAVI_ESTOP_PIN) == 0) {
+        s_estop_latched = true;
+        s_reason = HaltReason::ESTOP_BUTTON;
+        return;
+    }
+    ESP_LOGI(TAG, "e stop released");
+}
+
+// Speaker check
+//
+// The buzzer pin drives the aux board's LM386 through an NPN, so holding it
+// high only clicks. A square wave from LEDC makes a tone. Own timer and
+// channel, so the motor PWM on timer 0, channels 0 and 1, is untouched.
+static constexpr ledc_timer_t TONE_TIMER = LEDC_TIMER_1;
+static constexpr ledc_channel_t TONE_CHANNEL = LEDC_CHANNEL_2;
+
+void speaker_tone(uint32_t hz, uint32_t ms) {
+    ledc_timer_config_t timer = {};
+    timer.speed_mode = LEDC_LOW_SPEED_MODE;
+    timer.duty_resolution = LEDC_TIMER_10_BIT;
+    timer.timer_num = TONE_TIMER;
+    timer.freq_hz = hz;
+    timer.clk_cfg = LEDC_AUTO_CLK;
+    if (ledc_timer_config(&timer) != ESP_OK) {
+        ESP_LOGW(TAG, "tone timer setup failed at %lu Hz", (unsigned long)hz);
+        return;
+    }
+    ledc_channel_config_t ch = {};
+    ch.gpio_num = NAVI_BUZZER_PIN;
+    ch.speed_mode = LEDC_LOW_SPEED_MODE;
+    ch.channel = TONE_CHANNEL;
+    ch.timer_sel = TONE_TIMER;
+    ch.duty = 512;                            // 50% of 10 bit, a square wave
+    ch.hpoint = 0;
+    ledc_channel_config(&ch);
+
+    vTaskDelay(pdMS_TO_TICKS(ms));
+
+    // Give the pin back to plain GPIO. A halted control loop sets it again
+    // on its next pass, within 10 ms.
+    ledc_stop(LEDC_LOW_SPEED_MODE, TONE_CHANNEL, 0);
+    gpio_reset_pin(NAVI_BUZZER_PIN);
+    gpio_set_direction(NAVI_BUZZER_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(NAVI_BUZZER_PIN, 0);
+}
+
 bool estop_active() {
     return s_estop_latched;
 }

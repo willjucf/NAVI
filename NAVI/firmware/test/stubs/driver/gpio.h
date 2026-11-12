@@ -21,3 +21,8 @@ esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level);
 int gpio_get_level(gpio_num_t pin);
 esp_err_t gpio_install_isr_service(int flags);
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, gpio_isr_t fn, void *arg);
+#define GPIO_NUM_NC ((gpio_num_t)-1)
+typedef enum { GPIO_DRIVE_CAP_0, GPIO_DRIVE_CAP_1, GPIO_DRIVE_CAP_2, GPIO_DRIVE_CAP_3 } gpio_drive_cap_t;
+esp_err_t gpio_set_direction(gpio_num_t pin, gpio_mode_t mode);
+esp_err_t gpio_reset_pin(gpio_num_t pin);
+esp_err_t gpio_set_drive_capability(gpio_num_t pin, gpio_drive_cap_t strength);

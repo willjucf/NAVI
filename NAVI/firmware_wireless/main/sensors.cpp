@@ -2,6 +2,7 @@
 
 #include "sensors.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "driver/gpio.h"
@@ -314,7 +315,91 @@ static int32_t uss_measure() {
     return echo_us_to_mm(esp_timer_get_time() - echo_start);
 }
 
+static volatile bool s_uss_diag_requested = false;
+
+void sensors_request_uss_diag() {
+    s_uss_diag_requested = true;
+}
+
+// Idle level with each pull. Following the pull means nothing drives the pin.
+static const char* uss_pin_idle(gpio_num_t pin) {
+    gpio_config_t c = {};
+    c.pin_bit_mask = (1ULL << pin);
+    c.mode = GPIO_MODE_INPUT;
+    c.intr_type = GPIO_INTR_DISABLE;
+    c.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    gpio_config(&c);
+    esp_rom_delay_us(200);
+    const int with_down = gpio_get_level(pin);
+    c.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    c.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&c);
+    esp_rom_delay_us(200);
+    const int with_up = gpio_get_level(pin);
+    uss_set_input(pin);
+    if (with_down == 0 && with_up == 1) return "floating (nothing driving it)";
+    if (with_down == 1 && with_up == 1) return "driven HIGH";
+    if (with_down == 0 && with_up == 0) return "driven LOW";
+    return "odd (high with pull-down, low with pull-up)";
+}
+
+// Pulse trig, then watch echo for 100 ms.
+static void uss_diag_direction(gpio_num_t trig, gpio_num_t echo) {
+    uss_set_input(trig);
+    uss_set_input(echo);
+    esp_rom_delay_us(500);
+    const int echo_before = gpio_get_level(echo);
+    gpio_set_level(trig, 0);
+    gpio_set_direction(trig, GPIO_MODE_OUTPUT);
+    esp_rom_delay_us(4);
+    gpio_set_level(trig, 1);
+    esp_rom_delay_us(10);
+    gpio_set_level(trig, 0);
+
+    const int64_t start = esp_timer_get_time();
+    int64_t rise = -1, high_us = 0, last_change = start;
+    int level = gpio_get_level(echo), edges = 0;
+    while (esp_timer_get_time() - start < 100000) {
+        const int now_level = gpio_get_level(echo);
+        if (now_level != level) {
+            const int64_t t = esp_timer_get_time();
+            if (now_level == 1 && rise < 0) rise = t - start;
+            if (level == 1) high_us += t - last_change;
+            last_change = t;
+            level = now_level;
+            ++edges;
+        }
+    }
+    if (level == 1) high_us += esp_timer_get_time() - last_change;
+    uss_set_input(trig);
+    ESP_LOGI(TAG, "ussdiag: trig GPIO%d -> echo GPIO%d: echo before=%d, edges=%d, "
+                  "first rise %s%lld us, high for %lld us total",
+             trig, echo, echo_before, edges, rise < 0 ? "never " : "at ",
+             (long long)(rise < 0 ? 0 : rise), (long long)high_us);
+}
+
+static void uss_diag() {
+    const gpio_num_t a = NAVI_USS_PIN_A;
+    const gpio_num_t b = NAVI_USS_PIN_B;
+    ESP_LOGI(TAG, "ussdiag: GPIO%d idle %s", a, uss_pin_idle(a));
+    ESP_LOGI(TAG, "ussdiag: GPIO%d idle %s", b, uss_pin_idle(b));
+    uss_diag_direction(a, b);
+    vTaskDelay(pdMS_TO_TICKS(60));
+    uss_diag_direction(b, a);
+    ESP_LOGI(TAG, "ussdiag: a working sensor shows edges=2 and a rise within "
+                  "about 1 ms on one of the two lines");
+    // Leave the pins as normal polling expects them.
+    if (s_trig != GPIO_NUM_NC) {
+        gpio_set_direction(s_trig, GPIO_MODE_OUTPUT);
+        gpio_set_level(s_trig, 0);
+    }
+}
+
 static void uss_poll(SensorState& out) {
+    if (s_uss_diag_requested) {
+        s_uss_diag_requested = false;
+        uss_diag();
+    }
     if (s_trig == GPIO_NUM_NC) {
         // Not found yet. Try again about every 2 s so a sensor plugged in
         // after boot is picked up.

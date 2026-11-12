@@ -52,10 +52,16 @@ void sensors_poll(SensorState& out);
 void sensors_start_task();
 void sensors_latest(SensorState& out);
 
-// Temporary bench diagnostic. Logs the idle SDA and SCL levels, every address
-// that ACKs at 100 kHz, and WHO_AM_I at 0x68/0x69. Runs at boot when the IMU
-// is missing, and on "i2cscan" over WiFi or BLE. Only touches the bus while
+// Bus diagnostic. Logs the idle SDA and SCL levels, every address that ACKs
+// at 100 kHz, and WHO_AM_I at 0x68/0x69. Runs at boot when the IMU is
+// missing, and on the "i2cscan" command. Only touches the bus while
 // the IMU is not running, so it never races the sensor task.
 void sensors_i2c_scan();
+
+// Diagnostic for the ultrasonic header. Asks the sensor task
+// to log each pin's idle level and whether echo ever moves after a trigger,
+// both ways round. Runs inside the sensor task, so it never races the normal
+// polling. Triggered by the "ussdiag" command.
+void sensors_request_uss_diag();
 
 }  // namespace navi

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.cpp"
+        "commands.cpp"
         "safety.cpp"
         "sensors.cpp"
         "navi_logic.cpp"

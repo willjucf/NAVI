@@ -1,8 +1,9 @@
 // NAVI emergency stop and safe state.
 //
-// Report 6.6 puts the physical e stop ahead of every other safety gate, and
-// report 6.15 makes ESTOP enterable from anywhere but only left by an explicit
-// reset. Both live here on the ESP32.
+// Report 6.6 puts the physical e stop ahead of every other safety gate. The
+// button is push to stop, release to run, so it stays held down for as long as
+// the chair must stay stopped and releasing it is the on purpose action that
+// clears the stop. Both live here on the ESP32.
 
 #pragma once
 
@@ -16,7 +17,7 @@ namespace navi {
 // Call once at startup before the control loop.
 void safety_init();
 
-// True while latched in ESTOP. Only safety_reset() clears it.
+// True while in ESTOP. Cleared by releasing the button (estop_poll_release).
 bool estop_active();
 
 // The latched reason. Stays set while halted.
@@ -24,21 +25,32 @@ HaltReason halt_reason();
 
 // What latches and what does not.
 //
-// Only the button latches. A person pressed it on purpose, so report 6.15 wants
-// an on purpose action to clear it.
+// Only the button latches, and the button holds itself down, so releasing it
+// is the on purpose action that clears it.
 //
 // Signal loss, the bumper and tilt are rechecked every pass by
 // evaluate_safety() and clear on their own. A chair should not need a manual
 // reset because someone walked past the ultrasonic, and it should resume when
 // the Pi starts talking again. That is why there is no safety_trigger().
 
-// Leave the safe state. Explicit on purpose so releasing the button or the
-// hazard leaving view does not resume driving. Returns false and stays halted
-// if the e stop pin is still low.
+// Leave the safe state on command. Not used while estop_poll_release() clears
+// the stop on release. Returns false and stays halted if the e stop pin is
+// still low.
 //
 // Report 6.15 says leaving ESTOP must land in MANUAL, never AUTO. The Pi owns
 // the mode so it enforces that. This only releases the hardware latch.
 bool safety_reset();
+
+// The e stop is a push to stop, release to run button, so the button is its
+// own latch. Called every control pass: once the pin has read high (released)
+// for ESTOP_RELEASE_US, the stop clears. It never closes the relay itself;
+// safety_arm() does that once every other gate also passes.
+void estop_poll_release();
+
+// Speaker check (the "beep" command): plays a square wave tone on the buzzer pin for
+// ms, then hands the pin back to the halt indicator. Blocks for ms, so call it
+// from its own task. Moves nothing.
+void speaker_tone(uint32_t hz, uint32_t ms);
 
 // Close the motor cutoff relay so the chair can physically drive. The relay
 // boots open and stays open until this runs, so nothing moves before the

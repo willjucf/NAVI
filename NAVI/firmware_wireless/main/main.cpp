@@ -41,9 +41,11 @@ static constexpr int UART_RX_BUF = 512;
 static constexpr ledc_timer_bit_t PWM_RESOLUTION = LEDC_TIMER_8_BIT;
 static constexpr uint32_t PWM_FREQ_HZ = 20000;   // above hearing range
 
-// Report 6.17. At a 10 ms period, 12 steps per tick reaches full scale in about
-// a quarter second. Responsive but not enough to jerk a seated rider.
-static constexpr int RAMP_STEP = 12;
+// Report 6.17: 0.6 m/s^2, so 0 to the 1.2 m/s cruise (about 139 PWM) in 2 s,
+// which is 70 PWM a second. Applies to every change in speed short of a stop;
+// stops are immediate. Retune once cruise PWM is measured on the chair.
+static constexpr int RAMP_PWM_PER_S = 70;
+static constexpr int64_t RAMP_MAX_GAP_US = 50000;   // a late pass ramps at most this much
 static constexpr int CONTROL_PERIOD_MS = 10;
 
 struct MotorState {
@@ -157,6 +159,9 @@ static void uart_rx_task(void* arg) {
         // task hanging inside a read forever.
         const int n = uart_read_bytes(NAVI_UART_PORT, chunk, sizeof(chunk), 0);
         for (int i = 0; i < n; ++i) {
+            // Text commands (beep, ussdiag, i2cscan) work over the UART too.
+            // The packet parser skips anything outside <...>.
+            wireless_uart_text(static_cast<char>(chunk[i]));
             if (s_parser.feed(static_cast<char>(chunk[i]), decoded)) {
                 publish_command(decoded, esp_timer_get_time());
             } else if (s_parser.last_error() != ParseError::NONE) {
@@ -193,6 +198,7 @@ static void control_task(void* arg) {
     HaltReason last_reason = HaltReason::NONE;
     bool first_pass = true;
     int64_t last_report_us = 0;
+    RampClock ramp;
 
     while (true) {
         const int64_t now = esp_timer_get_time();
@@ -203,8 +209,10 @@ static void control_task(void* arg) {
         sensors_latest(sensors);
 
         safety.now_us = now;
-        // The e stop latch is the only condition that persists by itself.
-        // Everything below is rechecked from scratch each pass.
+        // The e stop latch is the only condition that persists by itself. It
+        // clears when the button is released. Everything below is rechecked
+        // from scratch each pass.
+        estop_poll_release();
         safety.estop_latched = estop_active();
         safety.bumper = sensors.bumper;
         safety.imu_ok = sensors.imu_ok;
@@ -234,8 +242,11 @@ static void control_task(void* arg) {
                 s_motor.left = 0;
                 s_motor.right = 0;
             } else {
-                s_motor.left = ramp_toward(s_motor.left, target.left, RAMP_STEP);
-                s_motor.right = ramp_toward(s_motor.right, target.right, RAMP_STEP);
+                const int step = ramp_steps(ramp, now, RAMP_PWM_PER_S, RAMP_MAX_GAP_US);
+                if (step > 0) {
+                    s_motor.left = ramp_toward(s_motor.left, target.left, step);
+                    s_motor.right = ramp_toward(s_motor.right, target.right, step);
+                }
             }
             motors_apply(s_motor);
         }

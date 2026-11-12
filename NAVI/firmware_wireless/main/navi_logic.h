@@ -133,6 +133,21 @@ int clamp_pwm(int value);
 // applied by the caller immediately, since a stop that eases in is not a stop.
 int ramp_toward(int current, int target, int max_step);
 
+// Whole PWM steps allowed this pass for a ramp of pwm_per_s, from the real time
+// since the last pass. The fraction left over carries to the next pass, so a
+// slow rate like 70 per second works on a 10 ms loop (0 or 1 step a pass). The
+// gap is capped at max_gap_us, so a stalled pass cannot bank a big jump. The
+// first call only starts the clock and returns 0. Returns 0 often: the caller
+// must hold the current output then, not pass 0 to ramp_toward, which would
+// jump straight to the target.
+struct RampClock {
+    int64_t last_us = -1;
+    int64_t carry = 0;               // PWM x microseconds, always under one step
+};
+
+int ramp_steps(RampClock& clock, int64_t now_us, int pwm_per_s,
+               int64_t max_gap_us);
+
 // Ultrasonic (report 3.7.6)
 
 // Echo never came back. Kept apart from zero, which would read as an obstacle

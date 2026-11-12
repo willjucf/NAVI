@@ -22,3 +22,6 @@ esp_err_t i2c_master_transmit(i2c_master_dev_handle_t dev, const uint8_t *buf,
 esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t dev,
                                       const uint8_t *wbuf, size_t wlen,
                                       uint8_t *rbuf, size_t rlen, int timeout_ms);
+esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t dev);
+esp_err_t i2c_master_probe(i2c_master_bus_handle_t bus, uint16_t addr, int timeout_ms);
+esp_err_t i2c_master_bus_reset(i2c_master_bus_handle_t bus);

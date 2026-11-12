@@ -510,6 +510,44 @@ static void test_ramp_downward_and_exact() {
     end();
 }
 
+static void test_ramp_rate() {
+    // 70 PWM a second on the 10 ms control loop: 0 to 139 (1.2 m/s) in 2 s.
+    begin("ramp_steps gives 70 PWM a second on a 10 ms loop");
+    RampClock clock;
+    CHECK_EQ(ramp_steps(clock, 0, 70, 50000), 0);          // first call starts the clock
+    int current = 0, passes = 0;
+    int64_t t = 0;
+    while (current < 139 && passes < 1000) {
+        t += 10000;
+        const int step = ramp_steps(clock, t, 70, 50000);
+        CHECK(step == 0 || step == 1);                   // never a jump
+        if (step > 0) {
+            current = ramp_toward(current, 139, step);
+        }
+        ++passes;
+    }
+    CHECK_EQ(current, 139);
+    CHECK(passes >= 195 && passes <= 200);               // about 2 s
+    end();
+}
+
+static void test_ramp_rate_gaps() {
+    begin("ramp_steps caps a stalled pass and carries fractions");
+    RampClock clock;
+    ramp_steps(clock, 0, 70, 50000);
+    CHECK_EQ(ramp_steps(clock, 5000000, 70, 50000), 3);    // 5 s stall counts as 50 ms
+    int total = 0;
+    for (int i = 1; i <= 100; ++i) {                       // one second, uneven passes
+        total += ramp_steps(clock, 5000000 + i * 10000 + (i % 2) * 3000, 70, 50000);
+    }
+    CHECK(total >= 69 && total <= 71);
+    CHECK_EQ(ramp_steps(clock, 4000000, 70, 50000), 0);    // clock going back is ignored
+    RampClock off;
+    ramp_steps(off, 0, 0, 50000);
+    CHECK_EQ(ramp_steps(off, 1000000, 0, 50000), 0);       // rate 0 never moves
+    end();
+}
+
 // ---------------------------------------------------------------------------
 // Ultrasonic conversion
 // ---------------------------------------------------------------------------
@@ -788,6 +826,8 @@ int main() {
     test_clamp_pwm();
     test_ramp_converges();
     test_ramp_downward_and_exact();
+    test_ramp_rate();
+    test_ramp_rate_gaps();
 
     printf("\nultrasonic (report 3.7.6)\n");
     test_echo_conversion();

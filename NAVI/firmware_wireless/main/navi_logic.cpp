@@ -173,8 +173,8 @@ SafetyDecision evaluate_safety(const SafetyInputs& in) {
     out.halted = true;
     out.arm_relay = false;
 
-    // Gate 1, the physical stop. First per report 6.6 and only cleared by a
-    // deliberate reset per report 6.15.
+    // Gate 1, the physical stop. First per report 6.6, cleared only by
+    // releasing the button (estop_poll_release in safety.cpp).
     if (in.estop_latched) {
         out.reason = HaltReason::ESTOP_BUTTON;
         return out;
@@ -234,6 +234,27 @@ int ramp_toward(int current, int target, int max_step) {
         return current - max_step;
     }
     return target;
+}
+
+int ramp_steps(RampClock& clock, int64_t now_us, int pwm_per_s,
+               int64_t max_gap_us) {
+    if (clock.last_us < 0 || pwm_per_s <= 0) {
+        clock.last_us = now_us;
+        clock.carry = 0;
+        return 0;
+    }
+    int64_t gap = now_us - clock.last_us;
+    clock.last_us = now_us;
+    if (gap < 0) {
+        gap = 0;
+    }
+    if (gap > max_gap_us) {
+        gap = max_gap_us;
+    }
+    clock.carry += gap * pwm_per_s;
+    const int64_t steps = clock.carry / 1000000;
+    clock.carry -= steps * 1000000;
+    return static_cast<int>(steps);
 }
 
 // Ultrasonic
