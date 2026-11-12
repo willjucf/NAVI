@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+output/
+*.bin
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/main/wifi_credentials.h
+firmware/main/sounds/voice.raw
+firmware/main/sounds/src/
+firmware/tools/.venv/
+tests/firmware/test_navi_logic
+NAVI-full/firmware*/build/
+NAVI-full/firmware*/sdkconfig
+NAVI-full/firmware*/sdkconfig.old
+NAVI-full/firmware_wireless/main/wifi_credentials.h

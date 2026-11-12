@@ -1,8 +1,0 @@
-#pragma once
-#include "FreeRTOS.h"
-typedef void *TaskHandle_t;
-typedef void (*TaskFunction_t)(void *);
-void vTaskDelay(TickType_t ticks);
-BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
-                       void *arg, uint32_t prio, TaskHandle_t *handle);
-void vTaskDelete(TaskHandle_t task);
