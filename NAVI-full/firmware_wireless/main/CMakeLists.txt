@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "safety.cpp"
+        "sensors.cpp"
+        "navi_logic.cpp"
+        "wireless.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_driver_uart
+        esp_driver_i2c
+        esp_timer
+        esp_wifi
+        esp_netif
+        esp_event
+        nvs_flash
+        lwip
+        bt
+        esp_ringbuf
+        app_update
+)
