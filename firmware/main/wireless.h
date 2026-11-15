@@ -1,7 +1,7 @@
 // WiFi and BLE links for bench work. Both take the same <L,R,F> packets as the UART.
 //   WiFi  TCP NAVI_WIFI_TCP_PORT, OTA on NAVI_OTA_TCP_PORT
 //   BLE   Nordic UART Service as NAVI_BLE_NAME, plus an update service
-// Text commands (UART, WiFi or BLE): i2cscan, ussdiag, beep.
+// Text commands (UART, WiFi or BLE): i2cscan, ussdiag, beep, tones, say <clip>.
 // Every log line is mirrored to connected clients.
 
 #pragma once

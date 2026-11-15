@@ -19,6 +19,7 @@
 #include "safety.h"
 #include "sensors.h"
 #include "wireless.h"
+#include "sound.h"
 
 namespace navi {
 
@@ -266,6 +267,9 @@ extern "C" void app_main(void) {
 
     // WiFi and BLE packets go through publish_command like UART ones.
     wireless_start(publish_command);
+
+    // Speaker clips and tones, on their own task.
+    sound_init();
 
     // Seed the timestamp. The relays still stay open until a real packet arrives.
     s_last_packet_us = esp_timer_get_time();

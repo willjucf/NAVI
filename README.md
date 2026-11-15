@@ -4,7 +4,7 @@ Assisted driving for a powered wheelchair. The rider drives with the joystick.
 NAVI watches for hazards and cuts the joystick through 4 relays when one appears.
 
 - **Raspberry Pi 5** (Python): webcam red/green detection, Arducam ToF, touchscreen UI.
-- **ESP32** (C++, ESP-IDF): E-stop, ultrasonic bumper, IMU tilt, relays.
+- **ESP32** (C++, ESP-IDF): E-stop, ultrasonic bumper, IMU tilt, relays, speaker.
 - Link: Pi USB → CP2102 → ESP32 UART0, 115200 baud, `<L,R,F>` packets at 20 Hz.
   `F=1` cuts the joystick, `F=0` clears it.
 
@@ -28,6 +28,7 @@ measured yet. Set `BRAKE_DISTANCE_MM` in `navi_config.py` and `BUMPER_STOP_MM` i
 ## Layout
 
 ```
+navi_app.py         chair app: screen, buttons, hazard decisions
 navi_config.py      every threshold, pin and timing
 navi_control.py     UART thread and state machine
 navi_vision.py      webcam capture and red/green detection
@@ -36,6 +37,7 @@ esp_serial.py       opens the CP2102 without resetting the ESP32
 esp_wireless.py     WiFi/BLE link to the ESP32 (bench use)
 selftest.py         preflight checks
 start_navi.sh       launcher, restarts on crash
+install.sh          desktop icon and start at boot
 firmware/           ESP32 firmware (ESP-IDF)
 tools/              console, calibration and measurement scripts
 tests/              unit tests, firmware logic tests, hardware tests
@@ -80,7 +82,7 @@ Console over serial, WiFi (`--ip`) or Bluetooth (`--ble`):
 python3 tools/navi_console.py
 ```
 
-Commands: `beep`, `i2cscan`, `ussdiag`.
+Commands: `beep`, `tones`, `say <clip>`, `i2cscan`, `ussdiag`.
 
 ## Tests
 

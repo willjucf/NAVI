@@ -3,6 +3,7 @@
 #include "wireless.h"
 #include "sensors.h"
 #include "safety.h"
+#include "sound.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -110,10 +111,23 @@ static void run_command(const char* line) {
         ESP_LOGI(TAG, "running i2cscan");
         xTaskCreate(i2cscan_task, "i2cscan", 4096, nullptr, 3, nullptr);
     } else if (strcmp(line, "beep") == 0) {
+        if (sound_busy()) {
+            ESP_LOGW(TAG, "beep: a sound is already playing");
+            return;
+        }
         ESP_LOGI(TAG, "beep: 1 kHz then 2 kHz on the speaker");
         xTaskCreate(beep_task, "beep", 3072, nullptr, 3, nullptr);
+    } else if (strcmp(line, "tones") == 0) {
+        sound_tones();
+    } else if (strcmp(line, "voice") == 0) {
+        sound_say("voice");
+    } else if (strncmp(line, "say ", 4) == 0) {
+        sound_say(line + 4);
+    } else if (strcmp(line, "say") == 0) {
+        ESP_LOGI(TAG, "say estop, obstacle, red, tilt, link, resume, voice or all");
     } else if (line[0] != 0) {
-        ESP_LOGW(TAG, "unknown command \"%s\" (try i2cscan, ussdiag or beep)", line);
+        ESP_LOGW(TAG, "unknown command \"%s\" (try i2cscan, ussdiag, beep, "
+                 "tones, voice or say <clip>)", line);
     }
 }
 
@@ -501,6 +515,16 @@ static void ble_start() {
 
 // WiFi
 
+// A few quick retries, then every 30 s, so WiFi scans don't starve BLE on the shared radio.
+static constexpr int WIFI_FAST_TRIES = 5;
+static constexpr int64_t WIFI_SLOW_RETRY_US = 30LL * 1000 * 1000;
+static esp_timer_handle_t s_wifi_retry = nullptr;
+
+static void wifi_retry_cb(void* arg) {
+    (void)arg;
+    esp_wifi_connect();
+}
+
 static void wifi_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     (void)arg;
     static int retries = 0;
@@ -508,13 +532,17 @@ static void wifi_event(void* arg, esp_event_base_t base, int32_t id, void* data)
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_ip = 0;
-        // Keep retrying forever, but only log now and then so a hotspot that
-        // is switched off does not flood the console.
-        if (retries++ % 10 == 0) {
+        const int n = retries++;
+        if (n == 0 || n == WIFI_FAST_TRIES || (n > WIFI_FAST_TRIES && n % 10 == 0)) {
             const auto* d = static_cast<wifi_event_sta_disconnected_t*>(data);
-            ESP_LOGW(TAG, "wifi not connected (reason %d), retrying", d->reason);
+            ESP_LOGW(TAG, "wifi not connected (reason %d), %s", d->reason,
+                     n < WIFI_FAST_TRIES ? "retrying" : "retrying every 30 s");
         }
-        esp_wifi_connect();
+        if (n < WIFI_FAST_TRIES || s_wifi_retry == nullptr) {
+            esp_wifi_connect();
+        } else if (!esp_timer_is_active(s_wifi_retry)) {
+            esp_timer_start_once(s_wifi_retry, WIFI_SLOW_RETRY_US);
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const auto* e = static_cast<ip_event_got_ip_t*>(data);
         s_ip = e->ip_info.ip.addr;
@@ -554,6 +582,14 @@ static bool wifi_start() {
             sizeof(cfg.sta.password));
     cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+
+    esp_timer_create_args_t retry_args = {};
+    retry_args.callback = wifi_retry_cb;
+    retry_args.name = "wifi_retry";
+    esp_timer_create(&retry_args, &s_wifi_retry);
+    // The driver's own info lines ("Coexist: Wi-Fi connect fail ...") repeat
+    // on every try. NAVI logs the WiFi state itself, so keep only warnings.
+    esp_log_level_set("wifi", ESP_LOG_WARN);
 
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
